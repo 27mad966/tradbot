@@ -25,10 +25,9 @@ async def api_balance():
 async def webhook(request: Request):
     try:
         data = await request.json()
-        print(f"Webhook: {data}")
-        return {"status": "ok"}
-    except:
-        return {"status": "error"}
+        symbol = data.get("symbol", "UNKNOWN")
+        action = data
+
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
@@ -57,3 +56,4 @@ document.body.addEventListener('htmx:afterSwap',e=>{if(e.detail.target.id==='bal
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
