@@ -100,12 +100,48 @@ async def api_market():
 
 @app.post("/webhook")
 async def webhook(request: Request):
+    """Webhook + Auto Trading Executor"""
     try:
         data = await request.json()
-        print(f"Webhook: {data}")
-        return {"status": "ok"}
+        symbol = data.get("symbol", "UNKNOWN")
+        action = data.get("action", "unknown").upper()
+        price = float(data.get("price", 0))
+        
+        print(f"🔔 Webhook: {symbol} {action} ${price}")
+        
+        # 🔥 AUTO EXECUTE ORDERS
+        if action in ["BUY", "LONG"]:
+            result = await place_buy_order(symbol, price)
+            print(f"✅ BUY EXECUTED: {result}")
+            
+        elif action in ["SELL", "SHORT"]:
+            result = await place_sell_order(symbol, price)
+            print(f"✅ SELL EXECUTED: {result}")
+            
+        elif action in ["TP", "CLOSE"]:
+            result = await close_position(symbol)
+            print(f"✅ POSITION CLOSED: {result}")
+            
+        else:
+            print(f"⚠️ Unknown action: {action}")
+        
+        return {"status": "executed", "symbol": symbol, "action": action}
+        
+    except Exception as e:
+        print(f"❌ Webhook Error: {e}")
+        return {"status": "error", "error": str(e)}
+
+async def place_buy_order(symbol: str, price: float) -> str:
+    """Execute Buy Order"""
+    try:
+        # Test Mode Response
+        return f"BUY {symbol} @ ${price} - 0.1 SOL (Test)"
     except:
-        return {"status": "error"}
+        return "BUY FAILED"
+
+async def place_sell_order(symbol: str, price: float) -> str:
+    """Execute Sell Order"""
+    try
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
@@ -171,3 +207,4 @@ updateTime();setInterval(updateTime,1000);
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
