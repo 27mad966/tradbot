@@ -1,113 +1,188 @@
+import os
+import logging
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
-import httpx
-import time
-from datetime import datetime
+from binance.client import Client
+from binance.exceptions import BinanceAPIException
+import uvicorn
 
-app = FastAPI()
+# إعدادات الـ Logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-async def get_test_balance():
-    return {
-        "total": 12500.50,
-        "usdt": 10000.25,
-        "btc": 0.125,
-        "timestamp": datetime.now().isoformat()
-    }
+app = FastAPI(title="Trading Bot - Binance Testnet")
 
-@app.get("/api/balance")
-async def api_balance():
-    return await get_test_balance()
+# تهيئة عميل Binance Testnet
+testnet = os.getenv('TESTNET', 'false').lower() == 'true'
+BINANCE_BASE_URL = "https://testnet.binance.vision" if testnet else "https://api.binance.com"
 
-@app.post("/webhook")
-async def webhook(request: Request):
-    try:
-        # 🔥 دعم Form Data + JSON
-        if hasattr(request, '_body'):
-            data = await request.form()
-            data = dict(data)
-        else:
-            data = await request.json()
-        
-        symbol = data.get("symbol", data.get("ticker", "UNKNOWN"))
-        action = data.get("action", "unknown").upper()
-        price = float(data.get("price", data.get("close", 0)))
-        
-        print(f"🔔 {symbol} {action} ${price}")
-        
-        if action == "BUY":
-            print(f"✅ SIMULATED BUY: {symbol} @ ${price}")
-        elif action == "SELL":
-            print(f"✅ SIMULATED SELL: {symbol} @ ${price}")
-        elif action == "TEST":
-            print(f"🧪 TEST OK: {symbol}")
-            
-        return {"status": "executed", "symbol": symbol, "action": action}
-    except Exception as e:
-        print(f"❌ Error: {e}")
-        print(f"Raw data: {await request.body()}")
-        return {"status": "error"}
+client = Client(
+    api_key=os.getenv('API_KEY', ''),
+    api_secret=os.getenv('API_SECRET', ''),
+    testnet=testnet,
+    base_url=BINANCE_BASE_URL
+)
 
-    except Exception as e:
-        print(f"❌ Error: {e}")
-        return {"status": "error"}
+positions = {}
 
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
     html = """
-<!DOCTYPE html>
-<html lang="ar" dir="rtl">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Trading Bot Pro</title>
-<script src="https://cdn.tailwindcss.com"></script>
-<script src="https://unpkg.com/htmx.org@1.9.10"></script>
-</head>
-<body class="bg-gradient-to-br from-indigo-900 to-purple-900 min-h-screen p-6 text-white">
-<div class="max-w-4xl mx-auto">
-<h1 class="text-4xl font-bold text-center mb-8">🚀 Trading Bot Pro</h1>
-
-<div class="bg-white/10 backdrop-blur p-8 rounded-3xl mb-8 text-center" 
-hx-get="/api/balance" hx-trigger="load, every 5s" hx-target="#balance">
-<div id="balance" class="text-xl">جاري التحميل...</div>
-</div>
-
-<div class="grid grid-cols-2 gap-4 mb-8">
-<button class="bg-green-500 hover:bg-green-600 p-4 rounded-xl font-bold" onclick="testBuy()">🟢 شراء</button>
-<button class="bg-red-500 hover:bg-red-600 p-4 rounded-xl font-bold" onclick="testSell()">🔴 بيع</button>
-</div>
-
-<div class="bg-green-500/20 p-6 rounded-2xl text-center">
-<p>✅ Webhook: https://tradbot-2qlz.onrender.com/webhook</p>
-<p class="text-sm mt-2 text-green-300">آخر تحديث: <span id="time"></span></p>
-</div>
-</div>
-
-<script>
-document.body.addEventListener('htmx:afterSwap', e => {
-    if(e.detail.target.id === 'balance') {
-        try {
-            const d = JSON.parse(e.detail.xhr.responseText);
-            e.detail.target.innerHTML = `
-                <div class="text-3xl font-bold text-green-400 mb-4">$${d.total?.toLocaleString()}</div>
-                <div>USDT: <span class="text-green-400">${d.usdt?.toFixed(2)}</span></div>
-                <div>BTC: <span class="text-orange-400">${d.btc?.toFixed(6)}</span></div>
-            `;
-        } catch(err) {}
-    }
-});
-
-function testBuy() { alert('🟢 SIMULATED BUY OK!'); }
-function testSell() { alert('🔴 SIMULATED SELL OK!'); }
-function updateTime() { document.getElementById('time').textContent = new Date().toLocaleTimeString('ar-SA'); }
-updateTime(); setInterval(updateTime, 1000);
-</script>
-</body>
-</html>
-"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Trading Bot Dashboard</title>
+        <meta http-equiv="refresh" content="5">
+        <style>
+            body { font-family: Arial; margin: 40px; background: #1a1a2e; color: #fff; }
+            .container { max-width: 800px; margin: 0 auto; }
+            .status { padding: 20px; border-radius: 10px; margin: 20px 0; }
+            .live { background: #00ff88; color: #000; }
+            .testnet { background: #ffaa00; }
+            .positions { background: #16213e; padding: 20px; border-radius: 10px; }
+            table { width: 100%; border-collapse: collapse; }
+            th, td { padding: 12px; text-align: left; border-bottom: 1px solid #333; }
+            .buy { color: #00ff88; }
+            .sell { color: #ff4444; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🤖 Trading Bot Dashboard</h1>
+            <div class="status live">✅ LIVE - Webhook Active</div>
+            <div class="status testnet">🔗 BINANCE TESTNET CONNECTED</div>
+            
+            <h2>💰 Balance</h2>
+            <div id="balance">Loading...</div>
+            
+            <h2>📊 Positions</h2>
+            <div class="positions">
+                <table>
+                    <tr><th>Symbol</th><th>Side</th><th>Size</th><th>Entry</th><th>P&L</th></tr>
+                    <tbody id="positions">No positions</tbody>
+                </table>
+            </div>
+        </div>
+        
+        <script>
+            async function updateData() {
+                try {
+                    const balanceRes = await fetch('/api/balance');
+                    const balance = await balanceRes.json();
+                    document.getElementById('balance').innerHTML = `
+                        <strong>USDT: $${balance.total}</strong> | 
+                        <span class="buy">Total P&L: ${balance.pnl}</span>
+                    `;
+                    
+                    const positionsRes = await fetch('/api/positions');
+                    const positions = await positionsRes.json();
+                    const tbody = document.getElementById('positions');
+                    if (positions.length === 0) {
+                        tbody.innerHTML = '<tr><td colspan="5">No open positions</td></tr>';
+                    } else {
+                        tbody.innerHTML = positions.map(p => `
+                            <tr>
+                                <td>${p.symbol}</td>
+                                <td class="${p.side.toLowerCase()}">${p.side}</td>
+                                <td>${p.size}</td>
+                                <td>$${p.entryPrice}</td>
+                                <td class="${p.unrealizedPnl > 0 ? 'buy' : 'sell'}">
+                                    $${p.unrealizedPnl.toFixed(4)}
+                                </td>
+                            </tr>
+                        `).join('');
+                    }
+                } catch(e) { console.error(e); }
+            }
+            updateData();
+            setInterval(updateData, 5000);
+        </script>
+    </body>
+    </html>
+    """
     return HTMLResponse(content=html)
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+@app.get("/api/balance")
+async def get_balance():
+    try:
+        account = client.futures_account()
+        usdt = float(account['totalWalletBalance'])
+        pnl = float(account['totalUnrealizedProfit'])
+        return {"total": usdt, "pnl": pnl}
+    except:
+        return {"total": "N/A", "pnl": "N/A"}
 
+@app.get("/api/positions")
+async def get_positions():
+    try:
+        positions = client.futures_position_information()
+        active = []
+        for pos in positions:
+            if float(pos['positionAmt']) != 0:
+                active.append({
+                    "symbol": pos['symbol'],
+                    "side": "LONG" if float(pos['positionAmt']) > 0 else "SHORT",
+                    "size": abs(float(pos['positionAmt'])),
+                    "entryPrice": float(pos['entryPrice']),
+                    "unrealizedPnl": float(pos['unrealizedProfit'])
+                })
+        return active
+    except:
+        return []
+
+@app.post("/webhook")
+async def webhook(request: Request):
+    try:
+        form = await request.form()
+        symbol = form.get('symbol').upper()
+        action = form.get('action').lower()
+        price = float(form.get('price'))
+        
+        logger.info(f"🔔 {symbol} {action} ${price}")
+        
+        # تنفيذ الأوامر على Testnet
+        if action in ['buy', 'sell']:
+            quantity = 10 / price * 0.98  # 10 USDT مع 2% buffer
+            
+            order = client.futures_create_order(
+                symbol=symbol,
+                side=action.upper(),
+                type="MARKET",
+                quantity=round(quantity, 3)
+            )
+            
+            result = f"✅ TESTNET {action.upper()}: {symbol} @ ${price:.2f} (ID: {order['orderId']})"
+            logger.info(result)
+            return {"status": "success", "message": result}
+            
+        elif action in ['tp', 'sl']:
+            # إغلاق المركز الحالي
+            positions = client.futures_position_information(symbol=symbol)
+            for pos in positions:
+                if float(pos['positionAmt']) != 0:
+                    side = "SELL" if float(pos['positionAmt']) > 0 else "BUY"
+                    qty = abs(float(pos['positionAmt']))
+                    
+                    order = client.futures_create_order(
+                        symbol=symbol,
+                        side=side,
+                        type="MARKET",
+                        quantity=round(qty, 3)
+                    )
+                    result = f"🧪 {action.upper()}: {symbol} CLOSED (ID: {order['orderId']})"
+                    logger.info(result)
+                    return {"status": "success", "message": result}
+            
+            return {"status": "no_position", "message": f"لا يوجد مركز مفتوح لـ {symbol}"}
+            
+    except BinanceAPIException as e:
+        error = f"❌ Binance Error: {e.message}"
+        logger.error(error)
+        return {"status": "error", "message": error}
+    except Exception as e:
+        error = f"❌ Error: {str(e)}"
+        logger.error(error)
+        return {"status": "error", "message": error}
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
