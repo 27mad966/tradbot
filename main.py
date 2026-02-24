@@ -21,14 +21,19 @@ async def api_balance():
 @app.post("/webhook")
 async def webhook(request: Request):
     try:
-        data = await request.json()
-        symbol = data.get("symbol", "UNKNOWN")
+        # 🔥 دعم Form Data + JSON
+        if hasattr(request, '_body'):
+            data = await request.form()
+            data = dict(data)
+        else:
+            data = await request.json()
+        
+        symbol = data.get("symbol", data.get("ticker", "UNKNOWN"))
         action = data.get("action", "unknown").upper()
-        price = data.get("price", 0)
+        price = float(data.get("price", data.get("close", 0)))
         
         print(f"🔔 {symbol} {action} ${price}")
         
-        # 🔥 AUTO EXECUTE (Test Mode)
         if action == "BUY":
             print(f"✅ SIMULATED BUY: {symbol} @ ${price}")
         elif action == "SELL":
@@ -37,6 +42,11 @@ async def webhook(request: Request):
             print(f"🧪 TEST OK: {symbol}")
             
         return {"status": "executed", "symbol": symbol, "action": action}
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        print(f"Raw data: {await request.body()}")
+        return {"status": "error"}
+
     except Exception as e:
         print(f"❌ Error: {e}")
         return {"status": "error"}
@@ -100,3 +110,4 @@ updateTime(); setInterval(updateTime, 1000);
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
