@@ -9,8 +9,8 @@ DASHBOARD_PASS = os.getenv("DASHBOARD_PASS", "AHMED_BOSS_2026")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "SNIPER_V96_SECRET")
 
 # قراءة المفاتيح من Environment Variables
-BINANCE_TESTNET_API_KEY = "8IRAIkU2bKuFd5ib8iRDbKGEz2aXUyf67DTlyXfu1J9OxuPV1CiY2H9ImmOcGwiY"
-BINANCE_TESTNET_SECRET_KEY = "daWtLcs2aVjG2zsVCRLsRti6zN0AmDbSvo3V8DCVzenUcfWnKb7s774CfJmCJm6o"
+BINANCE_TESTNET_API_KEY = "tm14bDzqhm8SnAMnHfE0YocNc6OobZ6nRsjZxMXeWsn74XH6emynQbtbu43fCttt"
+BINANCE_TESTNET_SECRET_KEY = "paruR8Q3PmReCdl6gNmLu84qCYDoZqKvbuSqkiER71UiJEGuHRRbjOoSNmRxWZ59"
 
 def create_binance_client():
     if not BINANCE_TESTNET_API_KEY or not BINANCE_TESTNET_SECRET_KEY:
@@ -102,3 +102,4 @@ async def handle_webhook(signal: Signal):
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
