@@ -1,30 +1,26 @@
 """
-🚀 TRADING BOT PRO v4.3 - 404 FIXED + كل المميزات
-Root path (/) → Login → Dashboard ✅
+🚀 TRADING BOT PRO v4.4 - كلمة السر مُصححة 100%
+كلمة السر: AHMED_BOSS_2026 ✅
 """
 
-from fastapi import FastAPI, Request, Form, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, Request, Form
+from fastapi.responses import HTMLResponse, RedirectResponse
 import json
 import os
 import sqlite3
 from datetime import datetime, timedelta
-import hashlib
 import random
-import urllib.parse
 
-app = FastAPI(title="🚀 Trading Bot Pro v4.3")
+app = FastAPI(title="🚀 Trading Bot Pro v4.4")
 
 # ==================== CONFIG ====================
-PASSWORD = os.getenv("DASHBOARD_PASS", "AHMED_BOSS_2026")
+PASSWORD = "AHMED_BOSS_2026"  # مُباشرة بدون env
 TRADES_DB = "trades_v4.db"
 BALANCE_FILE = "balance.json"
 
 MARKET_NEWS = [
-    "🔔 FOMC Meeting Tomorrow - Rate Decision Expected", 
-    "📈 Bitcoin ETF Approval Rumors Heating Up",
-    "⚠️ US CPI Data Release in 2 Hours",
-    "🚀 ETH ETF Launch Confirmed for Next Week"
+    "🔔 FOMC Meeting Tomorrow", "📈 Bitcoin ETF Rumors", 
+    "⚠️ US CPI Data 2 Hours", "🚀 ETH ETF Next Week"
 ]
 
 # ==================== DATABASE ====================
@@ -68,19 +64,19 @@ def save_balance(balance):
     with open(BALANCE_FILE, 'w') as f:
         json.dump(balance, f)
 
-# ==================== ROOT = LOGIN PAGE ====================
+# ==================== ROOT LOGIN ====================
 @app.get("/", response_class=HTMLResponse)
-async def root():
-    """الصفحة الرئيسية = صفحة Login"""
-    html = f"""
+async def login_page(request: Request):
+    init_db()
+    return HTMLResponse(content=f"""
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🚀 Trading Bot Pro v4.3 - دخول</title>
+    <title>🚀 Trading Bot Pro v4.4</title>
     <style>
-        * {{ font-family: 'Inter', -apple-system, sans-serif; }}
+        * {{ font-family: 'Inter', sans-serif; }}
         body {{ 
             background: linear-gradient(135deg, #0F0F23 0%, #1A1A2E 50%, #16213E 100%);
             color: #E5E7EB; display: flex; justify-content: center; align-items: center; 
@@ -95,61 +91,66 @@ async def root():
         input {{ 
             width: 100%; padding: 18px; margin: 15px 0; border: none; border-radius: 15px; 
             background: rgba(255,255,255,0.12); color: white; font-size: 16px; 
-            box-sizing: border-box; transition: all 0.3s;
+            box-sizing: border-box;
         }}
-        input:focus {{ background: rgba(255,255,255,0.2); outline: none; transform: scale(1.02); }}
         .btn-login {{ 
             width: 100%; padding: 18px; background: linear-gradient(45deg, #00D4AA, #00FF88); 
             border: none; border-radius: 15px; color: #0F0F23; font-weight: 700; font-size: 18px; 
-            cursor: pointer; transition: all 0.3s; box-shadow: 0 15px 35px rgba(0,212,170,0.4);
+            cursor: pointer; box-shadow: 0 15px 35px rgba(0,212,170,0.4);
         }}
-        .btn-login:hover {{ transform: translateY(-3px); box-shadow: 0 25px 45px rgba(0,212,170,0.6); }}
+        .btn-login:hover {{ transform: translateY(-2px); box-shadow: 0 25px 45px rgba(0,212,170,0.6); }}
         h1 {{ color: #00D4AA; margin-bottom: 10px; }}
-        .version {{ color: #00FF88; font-size: 14px; opacity: 0.9; }}
+        .hint {{ color: #00FF88; font-size: 14px; opacity: 0.9; background: rgba(0,255,136,0.1); padding: 10px; border-radius: 10px; margin: 20px 0; }}
     </style>
 </head>
 <body>
     <div class="login-box">
-        <h1>🚀 Trading Bot Pro</h1>
-        <p class="version">النسخة v4.3 - Binance Style</p>
-        <form id="loginForm">
-            <input type="password" id="password" placeholder="أدخل كلمة السر" required>
-            <button type="submit" class="btn-login">دخول إلى الداشبورد</button>
+        <h1>🚀 Trading Bot Pro v4.4</h1>
+        <p style="opacity: 0.8;">أدخل كلمة السر للدخول للداشبورد</p>
+        
+        <div class="hint">
+            💡 <strong>تلميح:</strong> جرب <code>AHMED_BOSS_2026</code>
+        </div>
+        
+        <form action="/auth" method="POST">
+            <input type="password" name="password" placeholder="كلمة السر هنا..." required>
+            <button type="submit" class="btn-login">🚀 دخول الداشبورد</button>
         </form>
-        <p style="margin-top: 20px; font-size: 14px; opacity: 0.7;">افتح الداشبورد من جهازك الشخصي أو الجوال</p>
+        
+        <p style="margin-top: 25px; font-size: 14px; opacity: 0.6;">
+            يعمل 24/7 على Render | PWA Mobile Ready
+        </p>
     </div>
-    <script>
-        document.getElementById('loginForm').onsubmit = async (e) => {{
-            e.preventDefault();
-            const pass = document.getElementById('password').value;
-            if (!pass) return alert('❌ أدخل كلمة السر');
-            
-            const encodedPass = btoa(pass);
-            const res = await fetch(`/dashboard?pass=${{encodedPass}}`);
-            if (res.ok) {{
-                localStorage.setItem('trading_pass', encodedPass);
-                window.location.href = '/dashboard';
-            }} else {{
-                alert('❌ كلمة السر خاطئة');
-                document.getElementById('password').value = '';
-            }}
-        }};
-    </script>
 </body>
 </html>
-    """
-    return HTMLResponse(content=html)
+    """)
+
+# ==================== AUTH ====================
+@app.post("/auth")
+async def authenticate(password: str = Form(...)):
+    if password == PASSWORD:
+        # حفظ الجلسة في cookie بسيط
+        response = RedirectResponse(url="/dashboard", status_code=302)
+        response.set_cookie(key="trading_session", value="valid", httponly=True, max_age=3600)
+        return response
+    else:
+        return HTMLResponse(content="""
+        <!DOCTYPE html>
+        <html><head><title>خطأ</title></head>
+        <body style="background: #1A1A2E; color: white; text-align: center; padding: 50px; font-family: sans-serif;">
+            <h1 style="color: #FF4757;">❌ كلمة السر خاطئة!</h1>
+            <p>جرب مرة أخرى: <strong>AHMED_BOSS_2026</strong></p>
+            <a href="/" style="color: #00D4AA;">← العودة لتسجيل الدخول</a>
+        </body></html>
+        """, status_code=403)
 
 # ==================== DASHBOARD ====================
 @app.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(request: Request):
-    """صفحة الداشبورد الرئيسية"""
-    # تحقق كلمة السر
-    pass_param = request.query_params.get("pass", "")
-    stored_pass = request.headers.get("localStorage", "").split("trading_pass=")[1] or ""
-    
-    if pass_param and hashlib.sha256(pass_param.encode()).hexdigest() != hashlib.sha256(PASSWORD.encode()).hexdigest():
-        return HTMLResponse(content='<script>alert("❌ كلمة السر خاطئة"); window.location="/";</script>')
+    # تحقق الجلسة
+    session = request.cookies.get("trading_session")
+    if session != "valid":
+        return RedirectResponse(url="/", status_code=302)
     
     init_db()
     balance = load_balance()
@@ -158,10 +159,8 @@ async def dashboard(request: Request):
     # بناء جدول الصفقات
     trades_html = ""
     total_trades = 0
-    total_profit = 0
     for row in trades:
         total_trades += 1
-        total_profit += row[6]
         profit_class = "profit" if row[6] > 0 else "loss"
         trades_html += f'''
         <tr>
@@ -180,60 +179,57 @@ async def dashboard(request: Request):
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🚀 Trading Bot Pro v4.3 - Dashboard</title>
+    <title>🚀 Trading Bot Pro v4.4 - Dashboard</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         * {{ font-family: 'Inter', sans-serif; }}
-        body {{ background: linear-gradient(135deg, #0F0F23 0%, #1A1A2E 50%, #16213E 100%); color: #E5E7EB; margin: 0; padding: 20px; overflow-x: hidden; }}
+        body {{ background: linear-gradient(135deg, #0F0F23 0%, #1A1A2E 50%, #16213E 100%); color: #E5E7EB; margin: 0; padding: 20px; }}
         .glass {{ background: rgba(255,255,255,0.05); backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; box-shadow: 0 25px 45px rgba(0,0,0,0.3); margin-bottom: 20px; padding: 25px; }}
         .header {{ display: flex; justify-content: space-between; align-items: center; background: rgba(0,212,170,0.15); border-radius: 25px; padding: 25px; margin-bottom: 25px; }}
         .profit {{ color: #00FF88 !important; font-size: 28px; font-weight: 700; }}
         .loss {{ color: #FF4757 !important; font-size: 28px; font-weight: 700; }}
-        .stat-card {{ padding: 25px; text-align: center; border-radius: 15px; background: rgba(255,255,255,0.05); }}
         .btn-neon {{ padding: 15px 30px; border: none; border-radius: 50px; background: linear-gradient(45deg, #00D4AA, #00FF88); color: #0F0F23; font-weight: 700; cursor: pointer; transition: all 0.3s; box-shadow: 0 10px 30px rgba(0,212,170,0.4); margin: 5px; }}
         .btn-neon:hover {{ transform: translateY(-3px); box-shadow: 0 20px 40px rgba(0,212,170,0.6); }}
         .btn-pink {{ background: linear-gradient(45deg, #F72585, #FF6B9D) !important; }}
         .trades-table {{ width: 100%; border-collapse: collapse; font-size: 14px; }}
-        .trades-table th {{ background: rgba(0,212,170,0.2); padding: 15px; text-align: right; border-radius: 10px 10px 0 0; }}
+        .trades-table th {{ background: rgba(0,212,170,0.2); padding: 15px; text-align: right; }}
         .trades-table td {{ padding: 12px 15px; text-align: right; border-bottom: 1px solid rgba(255,255,255,0.1); }}
-        #news-ticker {{ background: rgba(247,37,133,0.15); padding: 15px; border-radius: 15px; overflow: hidden; margin: 20px 0; }}
         #newsContent {{ display: inline-block; white-space: nowrap; animation: scroll 30s linear infinite; padding-left: 100%; }}
         @keyframes scroll {{ 0% {{ transform: translateX(0); }} 100% {{ transform: translateX(-100%); }} }}
         input {{ width: 100%; padding: 15px; margin: 10px 0; background: rgba(255,255,255,0.1); border: none; border-radius: 15px; color: white; box-sizing: border-box; }}
-        @media (max-width: 768px) {{ .header {{ flex-direction: column; gap: 20px; text-align: center; }} }}
+        @media (max-width: 768px) {{ .header {{ flex-direction: column; gap: 20px; }} }}
     </style>
 </head>
 <body>
     <div class="header glass">
         <div>
-            <h1 style="margin: 0; font-size: 32px; color: #00D4AA;">🚀 Trading Bot Pro v4.3</h1>
-            <p style="margin: 5px 0; opacity: 0.8;">{datetime.now().strftime('%Y-%m-%d %H:%M:%S %Z')}</p>
+            <h1 style="margin: 0; font-size: 32px; color: #00D4AA;">🚀 Trading Bot Pro v4.4</h1>
+            <p style="margin: 5px 0; opacity: 0.8;">{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
         </div>
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 20px;">
-            <div class="stat-card">
-                <div style="font-size: 18px; opacity: 0.9;">💰 رصيد USDT</div>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 20px;">
+            <div style="padding: 20px; text-align: center; background: rgba(0,255,136,0.1); border-radius: 15px;">
+                <div style="font-size: 16px; opacity: 0.9;">💰 USDT</div>
                 <div class="profit">${balance['usdt']:.2f}</div>
             </div>
-            <div class="stat-card">
-                <div style="font-size: 18px; opacity: 0.9;">📈 إجمالي الربح</div>
+            <div style="padding: 20px; text-align: center; background: rgba(0,212,170,0.1); border-radius: 15px;">
+                <div style="font-size: 16px; opacity: 0.9;">📈 P&L</div>
                 <div class="profit">+${balance['total_profit']:.2f}</div>
-                <p style="font-size: 14px; opacity: 0.7;">({balance['pnl_percent']:.1f}%)</p>
             </div>
-            <div class="stat-card">
-                <div style="font-size: 18px; opacity: 0.9;">📊 صفقات</div>
-                <div style="color: #00D4AA; font-size: 24px;">{total_trades}</div>
+            <div style="padding: 20px; text-align: center; background: rgba(255,136,0,0.1); border-radius: 15px;">
+                <div style="font-size: 16px; opacity: 0.9;">📊 صفقات</div>
+                <div style="color: #00D4AA; font-size: 22px;">{total_trades}</div>
             </div>
         </div>
     </div>
 
-    <div id="news-ticker" class="glass">
-        <strong style="margin-right: 15px; color: #F72585;">🔔 تنبيهات السوق الحالية:</strong>
+    <div style="background: rgba(247,37,133,0.15); padding: 15px; border-radius: 15px; overflow: hidden; margin: 20px 0;">
+        <strong style="margin-right: 15px; color: #F72585;">🔔 تنبيهات السوق:</strong>
         <div id="newsContent">""" + " | ".join(MARKET_NEWS) + """</div>
     </div>
 
     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 25px; margin-bottom: 25px;">
         <div class="glass">
-            <h3 style="margin-top: 0; color: #00D4AA;">⚡ تداول سريع</h3>
+            <h3 style="margin: 0 0 20px 0; color: #00D4AA;">⚡ تداول سريع</h3>
             <input id="symbol" placeholder="ETHUSDT" value="ETHUSDT">
             <input id="amount" placeholder="10 USDT" value="10">
             <div style="display: flex; flex-wrap: wrap; gap: 10px;">
@@ -243,13 +239,13 @@ async def dashboard(request: Request):
             </div>
         </div>
         <div class="glass">
-            <h3 style="margin-top: 0; color: #00D4AA;">📊 حالة الحساب</h3>
+            <h3 style="margin: 0 0 20px 0; color: #00D4AA;">📊 حالة الحساب</h3>
             <canvas id="pnlChart" height="250"></canvas>
         </div>
     </div>
 
     <div class="glass">
-        <h3 style="margin-top: 0; color: #00D4AA;">📋 سجل آخر 30 يوم ({total_trades} صفقة)</h3>
+        <h3 style="margin: 0 0 20px 0; color: #00D4AA;">📋 سجل آخر 30 يوم ({total_trades} صفقة)</h3>
         <div style="overflow-x: auto;">
             <table class="trades-table">
                 <thead><tr><th>التاريخ</th><th>العملة</th><th>النوع</th><th>سعر الدخول</th><th>الكمية</th><th>الربح</th><th>الحالة</th></tr></thead>
@@ -259,7 +255,6 @@ async def dashboard(request: Request):
     </div>
 
     <script>
-        // Chart.js
         new Chart(document.getElementById('pnlChart').getContext('2d'), {{
             type: 'line',
             data: {{ labels: ['يناير','فبراير','مارس','أبريل'], datasets: [{{
@@ -272,7 +267,6 @@ async def dashboard(request: Request):
             options: {{ responsive: true, scales: {{ y: {{ beginAtZero: true }} }} }}
         }});
 
-        // Quick Trade
         async function quickTrade(action) {{
             const symbol = document.getElementById('symbol').value || 'ETHUSDT';
             const amount = document.getElementById('amount').value || '10';
@@ -289,15 +283,13 @@ async def dashboard(request: Request):
             }}
         }}
         
-        // Auto Refresh كل 30 ثانية
         setInterval(() => location.reload(), 30000);
     </script>
 </body>
 </html>
-    """
-    return HTMLResponse(content=html_content)
+    """)
 
-# ==================== WEBHOOK آمن ====================
+# ==================== WEBHOOK ====================
 @app.post("/webhook")
 async def webhook(request: Request):
     try:
@@ -306,13 +298,11 @@ async def webhook(request: Request):
         print(f"Webhook: '{message}'")
         
         if not message.strip():
-            return {"status": "Empty message OK"}
+            return {"status": "Empty OK"}
             
         parts = message.lower().strip().split()
-        if len(parts) < 2:
-            return {"status": "Short message OK"}
-        
-        action, symbol = parts[0], parts[1].upper()
+        action = parts[0] if parts else "buy"
+        symbol = parts[1].upper() if len(parts) > 1 else "ETHUSDT"
         amount = float(parts[2].replace("$", "")) if len(parts) > 2 else 10.0
         
         entry_price = round(random.uniform(3000, 3500), 2)
@@ -328,10 +318,9 @@ async def webhook(request: Request):
         print(f"Webhook safe: {e}")
         return {"status": "OK"}
 
-# ==================== PING ====================
 @app.get("/ping")
 async def ping():
-    return {"status": "alive", "time": datetime.now().isoformat()}
+    return {"status": "alive"}
 
 if __name__ == "__main__":
     import uvicorn
