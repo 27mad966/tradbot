@@ -1,138 +1,91 @@
-import os
-import logging
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
-from binance.client import Client
-from binance.exceptions import BinanceAPIException
-import uvicorn
-
-app = FastAPI(title="Trading Bot - Binance Testnet")
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Binance Testnet Client
-testnet = os.getenv('TESTNET', 'false').lower() == 'true'
-client = None
-try:
-    client = Client(
-        api_key=os.getenv('API_KEY'),
-        api_secret=os.getenv('API_SECRET'),
-        testnet=testnet
-    )
-except:
-    logger.error("❌ فشل في تهيئة Binance Client")
-
-@app.get("/", response_class=HTMLResponse)
-async def dashboard():
-    return HTMLResponse(content="""
 <!DOCTYPE html>
-<html>
+<html dir="rtl" lang="ar">
 <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Trading Bot Dashboard</title>
-    <meta http-equiv="refresh" content="5">
     <style>
-        body { font-family: Arial; margin: 40px; background: #1a1a2e; color: #fff; }
-        .container { max-width: 800px; margin: 0 auto; }
-        .status { padding: 20px; border-radius: 10px; margin: 20px 0; }
-        .live { background: #00ff88; color: #000; }
-        .testnet { background: #ffaa00; }
-        .error { background: #ff4444; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Tahoma, sans-serif; background: linear-gradient(135deg, #0f0f23 0%, #1a1a2e 100%); color: white; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        h1 { text-align: center; margin-bottom: 30px; color: #00ff88; }
+        .status { display: flex; gap: 20px; margin-bottom: 30px; }
+        .status-card { flex: 1; background: rgba(255,255,255,0.1); padding: 20px; border-radius: 15px; text-align: center; }
+        .status-card.green { border: 2px solid #00ff88; }
+        .profit { color: #00ff88; font-size: 2em; font-weight: bold; }
+        .loss { color: #ff4444; font-size: 2em; font-weight: bold; }
+        .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 30px; }
+        .stat { background: rgba(255,255,255,0.1); padding: 20px; border-radius: 15px; text-align: center; }
+        table { width: 100%; border-collapse: collapse; background: rgba(255,255,255,0.1); border-radius: 15px; overflow: hidden; }
+        th, td { padding: 15px; text-align: right; border-bottom: 1px solid rgba(255,255,255,0.2); }
+        th { background: rgba(0,255,136,0.2); }
+        tr.open { background: rgba(0,255,0,0.1); }
+        tr.closed { background: rgba(255,255,255,0.05); }
+        tr:hover { background: rgba(255,255,255,0.1); }
+        .live { color: #00ff88; font-weight: bold; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>🤖 Trading Bot Dashboard</h1>
-        <div class="status live">✅ LIVE - Webhook Active</div>
-        <div class="status testnet">🔗 BINANCE TESTNET: """ + ("متصل" if client else "❌ غير متصل") + """</div>
-        <div id="balance">جاري التحميل...</div>
-        <div id="status">جاري التحقق...</div>
+        <h1>🟢 Live Trading Dashboard</h1>
+        
+        <div class="status">
+            <div class="status-card {{ 'green' if balance.testnet else '' }}">
+                <h3>{{ 'Binance Testnet' if balance.testnet else 'Binance Live' }}</h3>
+                <div class="live">{{ '🟢 متصل' if balance.usdt else '🔴 خطأ' }}</div>
+            </div>
+            <div class="status-card">
+                <h3>رصيد USDT</h3>
+                <div>{{ "%.2f"|format(balance.usdt|default(0)) }}</div>
+            </div>
+        </div>
+
+        <div class="stats">
+            <div class="stat">
+                <h3>الربح الإجمالي</h3>
+                <span class="{{ 'profit' if total_profit >= 0 else 'loss' }}">{{ "%.2f"|format(total_profit) }} USDT</span>
+            </div>
+            <div class="stat">
+                <h3>صفقات مفتوحة</h3>
+                <span>{{ open_trades }}</span>
+            </div>
+            <div class="stat">
+                <h3>صفقات مغلقة</h3>
+                <span>{{ closed_trades }}</span>
+            </div>
+        </div>
+
+        <h2>📊 آخر 10 صفقات:</h2>
+        <table>
+            <tr>
+                <th>النوع</th>
+                <th>الزوج</th>
+                <th>السعر</th>
+                <th>الكمية</th>
+                <th>سعر البيع</th>
+                <th>الربح</th>
+                <th>التاريخ</th>
+            </tr>
+            {% for trade in recent_trades %}
+            <tr class="{{ 'open' if trade.status == 'OPEN' else 'closed' }}">
+                <td>{{ trade.type }}</td>
+                <td>{{ trade.symbol }}</td>
+                <td>${{ "%.4f"|format(trade.price) }}</td>
+                <td>{{ "%.4f"|format(trade.amount) }}</td>
+                <td>{{ "%.4f"|format(trade.sell_price|default(0)) }}</td>
+                <td class="{{ 'profit' if trade.profit > 0 else 'loss' }}">
+                    {% if trade.profit is defined %}{{ "%.2f"|format(trade.profit) }} USDT{% endif %}
+                </td>
+                <td>{{ trade.timestamp[:16] }}</td>
+            </tr>
+            {% endfor %}
+        </table>
     </div>
+
     <script>
         setInterval(async () => {
-            try {
-                const res = await fetch('/api/balance');
-                const data = await res.json();
-                document.getElementById('balance').innerHTML = 
-                    `💰 USDT: $${data.total || 0} | P&L: $${data.pnl || 0}`;
-                document.getElementById('status').innerHTML = data.status;
-            } catch(e) {
-                document.getElementById('balance').innerHTML = '❌ خطأ في الاتصال';
-            }
-        }, 3000);
+            location.reload();
+        }, 5000); // تحديث كل 5 ثواني
     </script>
 </body>
-</html>""")
-
-@app.get("/api/balance")
-async def get_balance():
-    if not client:
-        return {"total": 0, "pnl": 0, "status": "❌ Binance غير متصل"}
-    
-    try:
-        account = client.futures_account()
-        return {
-            "total": float(account['totalWalletBalance']),
-            "pnl": float(account['totalUnrealizedProfit']),
-            "status": "✅ Testnet متصل"
-        }
-    except Exception as e:
-        return {"total": 0, "pnl": 0, "status": f"❌ خطأ: {str(e)[:50]}"}
-
-@app.post("/webhook")
-async def webhook(request: Request):
-    try:
-        form = await request.form()
-        
-        # التحقق من البيانات مع الحماية من None
-        symbol = form.get('symbol')
-        action = form.get('action')
-        price_str = form.get('price')
-        
-        if not all([symbol, action, price_str]):
-            return {"status": "error", "message": "❌ بيانات ناقصة"}
-        
-        symbol = symbol.strip().upper()
-        action = action.strip().lower()
-        price = float(price_str.strip())
-        
-        logger.info(f"🔔 {symbol} {action} ${price}")
-        
-        if not client:
-            return {"status": "error", "message": "❌ Binance Client غير متصل"}
-        
-        if action in ['buy', 'sell']:
-            quantity = round((10 / price) * 0.98, 3)
-            
-            order = client.futures_create_order(
-                symbol=symbol,
-                side=action.upper(),
-                type="MARKET",
-                quantity=quantity
-            )
-            
-            result = f"✅ TESTNET {action.upper()}: {symbol} @ ${price:.2f} (ID: {order['orderId']})"
-            logger.info(result)
-            return {"status": "success", "message": result}
-            
-        elif action == 'tp':
-            positions = client.futures_position_information(symbol=symbol)
-            for pos in positions:
-                if float(pos['positionAmt']) != 0:
-                    side = "SELL" if float(pos['positionAmt']) > 0 else "BUY"
-                    qty = abs(float(pos['positionAmt']))
-                    order = client.futures_create_order(
-                        symbol=symbol,
-                        side=side,
-                        type="MARKET",
-                        quantity=round(qty, 3)
-                    )
-                    return {"status": "success", "message": f"🧪 TP: {symbol} مغلق (ID: {order['orderId']})"}
-            return {"status": "no_position", "message": f"لا يوجد مركز مفتوح لـ {symbol}"}
-            
-    except Exception as e:
-        logger.error(f"❌ خطأ في webhook: {str(e)}")
-        return {"status": "error", "message": f"خطأ: {str(e)[:100]}"}
-
-if __name__ == "__main__":
-    port = int(os.getenv("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+</html>
