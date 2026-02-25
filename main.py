@@ -14,7 +14,7 @@ import asyncio
 from typing import List
 
 app = FastAPI(title="🚀 Trading Pro v3.0", version="3.0")
-app.mount("/static", StaticFiles(directory="static"), name="static")
+#app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # ========== البيانات العامة ==========
 TRADES_FILE = "trades.json"
@@ -448,3 +448,4 @@ self.addEventListener('fetch', e => {
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=10000)
+
