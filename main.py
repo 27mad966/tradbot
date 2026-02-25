@@ -94,8 +94,7 @@ async def webhook(request: Request):
             symbol = next((p for p in parts if "usdt" in p.upper()), "ETHUSDT")
             amount = next((float(p) for p in parts if p.replace('.','').isdigit()), 10)
             
-            # محاكاة صفقة ناجحة للـ Dashboard
-            current_price = random.uniform(2900, 3500)  # سعر ETH وهمي
+            current_price = random.uniform(2900, 3500)
             trade = {
                 "id": len(load_trades()) + 1,
                 "type": "BUY",
@@ -115,7 +114,7 @@ async def webhook(request: Request):
             trades = load_trades()
             open_trades = [t for t in trades if t["status"] == "OPEN"]
             if open_trades:
-                buy_trade = open_trades[-1]  # آخر صفقة مفتوحة
+                buy_trade = open_trades[-1]
                 current_price = random.uniform(3100, 3800)
                 profit = (current_price - buy_trade["price"]) * buy_trade["amount"]
                 
@@ -157,6 +156,9 @@ async def dashboard():
     trades = load_trades()
     stats = calculate_stats(trades)
     
+    # إصلاح مشكلة f-string المعقدة
+    status_text = "🟢 Binance Live" if balance.get('status') == 'live' and not balance['testnet'] else "🟢 Binance Testnet" if balance.get('status') == 'live' else "🟡 وضع تجريبي"
+    
     html_content = f"""
 <!DOCTYPE html>
 <html dir="rtl" lang="ar">
@@ -164,49 +166,34 @@ async def dashboard():
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>🚀 Trading Bot Pro Dashboard</title>
-    <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;600;700&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         *{{margin:0;padding:0;box-sizing:border-box;}}
-        body{{font-family:'Cairo',sans-serif;background:linear-gradient(135deg,#0c0c1a 0%,#1a1a2e 50%,#16213e 100%);color:#fff;min-height:100vh;padding:20px;overflow-x:hidden;}}
+        body{{font-family:system-ui;background:linear-gradient(135deg,#0c0c1a 0%,#1a1a2e 50%,#16213e 100%);color:#fff;min-height:100vh;padding:20px;overflow-x:hidden;}}
         .container{{max-width:1400px;margin:0 auto;}}
         .header{{text-align:center;margin-bottom:30px;}}
         .header h1{{font-size:2.5em;color:#00ff88;text-shadow:0 0 20px rgba(0,255,136,0.3);}}
-        .header p{{color:#aaa;font-size:1.1em;margin-top:10px;}}
-        
-        .grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:20px;margin-bottom:30px;}}
-        .card{{background:linear-gradient(145deg,rgba(255,255,255,0.05),rgba(255,255,255,0.02));backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,0.1);border-radius:20px;padding:25px;transition:all 0.3s ease;box-shadow:0 8px 32px rgba(0,0,0,0.3);}}
-        .card:hover{{transform:translateY(-5px);box-shadow:0 15px 40px rgba(0,255,136,0.2);}}
-        
-        .metric{{text-align:center;}}
-        .metric-value{{font-size:2.5em;font-weight:700;margin:10px 0;line-height:1;}}
+        .grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:20px;margin-bottom:30px;}}
+        .card{{background:linear-gradient(145deg,rgba(255,255,255,0.08),rgba(255,255,255,0.02));backdrop-filter:blur(15px);border:1px solid rgba(255,255,255,0.1);border-radius:20px;padding:25px;transition:all 0.3s;box-shadow:0 8px 32px rgba(0,0,0,0.4);}}
+        .card:hover{{transform:translateY(-5px);box-shadow:0 15px 40px rgba(0,255,136,0.3);border-color:rgba(0,255,136,0.5);}}
+        .metric-value{{font-size:2.2em;font-weight:700;margin:10px 0;line-height:1;}}
         .profit{{color:#00ff88;text-shadow:0 0 15px rgba(0,255,136,0.5);}}
         .loss{{color:#ff4444;text-shadow:0 0 15px rgba(255,68,68,0.5);}}
-        .metric-label{{color:#aaa;font-size:0.9em;letter-spacing:1px;}}
-        
-        .status-grid{{display:grid;grid-template-columns:1fr 1fr;gap:15px;margin-bottom:20px;}}
-        .status-card{{padding:20px;border-radius:15px;text-align:center;transition:all 0.3s;}}
-        .status-live{{background:linear-gradient(135deg,#00ff88, #00cc6a);color:#000;box-shadow:0 0 20px rgba(0,255,136,0.4);}}
-        .status-demo{{background:linear-gradient(135deg,#ffaa00,#ff8800);color:#000;}}
-        
-        .trades-table{{overflow-x:auto;}}
+        .metric-label{{color:#aaa;font-size:0.9em;letter-spacing:1px;text-transform:uppercase;}}
+        .status-grid{{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:25px;}}
+        .status-card{{padding:25px;border-radius:20px;text-align:center;}}
+        .status-live{{background:linear-gradient(135deg,#00ff88,#00cc6a);color:#000;box-shadow:0 0 30px rgba(0,255,136,0.5);}}
+        .status-demo{{background:linear-gradient(135deg,#ffaa00,#ff8800);color:#000;box-shadow:0 0 30px rgba(255,170,0,0.5);}}
         .table{{width:100%;border-collapse:collapse;margin-top:15px;}}
-        .table th{{background:linear-gradient(135deg,#00ff88,#00cc6a);color:#000;padding:15px;font-weight:600;text-align:right;}}
+        .table th{{background:linear-gradient(135deg,#00ff88,#00cc6a);color:#000;padding:15px;font-weight:600;text-align:right;border-radius:10px 10px 0 0;}}
         .table td{{padding:12px 15px;border-bottom:1px solid rgba(255,255,255,0.1);}}
         .table tr:hover{{background:rgba(0,255,136,0.1);}}
         .trade-open{{border-left:4px solid #00ff88;}}
         .trade-closed{{border-left:4px solid #aaa;}}
-        
-        .charts-grid{{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin:30px 0;}}
-        .chart-container{{background:rgba(255,255,255,0.05);border-radius:20px;padding:20px;border:1px solid rgba(255,255,255,0.1);}}
-        
-        .live-indicator{{position:fixed;top:20px;right:20px;width:20px;height:20px;background:#00ff88;border-radius:50%;box-shadow:0 0 20px rgba(0,255,136,0.6);animation:pulse 2s infinite;}}
+        .live-indicator{{position:fixed;top:20px;right:20px;width:20px;height:20px;background:#00ff88;border-radius:50%;box-shadow:0 0 20px rgba(0,255,136,0.8);animation:pulse 2s infinite;}}
         @keyframes pulse{{0%,100%{{opacity:1;}}50%{{opacity:0.5;}}}}
-        
-        .fab{{position:fixed;bottom:30px;right:30px;background:linear-gradient(135deg,#00ff88,#00cc6a);width:60px;height:60px;border-radius:50%;border:none;color:#000;font-size:1.5em;cursor:pointer;box-shadow:0 10px 30px rgba(0,255,136,0.4);transition:all 0.3s;}}
+        .fab{{position:fixed;bottom:30px;right:30px;background:linear-gradient(135deg,#00ff88,#00cc6a);width:60px;height:60px;border-radius:50%;border:none;color:#000;font-size:1.5em;cursor:pointer;box-shadow:0 10px 30px rgba(0,255,136,0.4);transition:all 0.3s;z-index:1000;}}
         .fab:hover{{transform:scale(1.1);box-shadow:0 15px 40px rgba(0,255,136,0.6);}}
-        
-        @media(max-width:768px){{.charts-grid{{grid-template-columns:1fr;}}.status-grid{{grid-template-columns:1fr;}}}}
     </style>
 </head>
 <body>
@@ -215,13 +202,13 @@ async def dashboard():
     <div class="container">
         <div class="header">
             <h1>🚀 Trading Bot Pro</h1>
-            <p>نظام تداول آلي احترافي | تحديث كل 5 ثواني</p>
+            <p>نظام تداول آلي احترافي | تحديث تلقائي كل 5 ثواني</p>
         </div>
         
         <div class="status-grid">
-            <div class="status-card {'status-live' if balance['status']=='live' else 'status-demo'}">
-                <h3>{'🟢 Binance {'Testnet' if balance['testnet'] else 'Live'}' if balance['status']=='live' else '🟡 وضع تجريبي'}</h3>
-                <div style="font-size:1.5em;font-weight:700;">متصل</div>
+            <div class="status-card status-{'live' if balance.get('status')=='live' else 'demo'}">
+                <h3>{status_text}</h3>
+                <div style="font-size:1.8em;font-weight:700;">🟢 متصل</div>
             </div>
             <div class="status-card">
                 <h3>رصيد USDT</h3>
@@ -231,57 +218,34 @@ async def dashboard():
         
         <div class="grid">
             <div class="card">
-                <div class="metric">
-                    <div class="metric-value {'profit' if stats['total_profit']>=0 else 'loss'}">${stats['total_profit']:.2f}</div>
-                    <div class="metric-label">الربح الإجمالي</div>
-                </div>
+                <div class="metric-value {'profit' if stats['total_profit']>=0 else 'loss'}">${stats['total_profit']:.2f}</div>
+                <div class="metric-label">الربح الإجمالي</div>
             </div>
             <div class="card">
-                <div class="metric">
-                    <div class="metric-value">{stats['win_rate']:.1f}%</div>
-                    <div class="metric-label">نسبة النجاح</div>
-                </div>
+                <div class="metric-value">{stats['win_rate']:.1f}%</div>
+                <div class="metric-label">نسبة النجاح</div>
             </div>
             <div class="card">
-                <div class="metric">
-                    <div class="metric-value">{stats['total_trades']}</div>
-                    <div class="metric-label">إجمالي الصفقات</div>
-                </div>
+                <div class="metric-value">{stats['total_trades']}</div>
+                <div class="metric-label">إجمالي الصفقات</div>
             </div>
             <div class="card">
-                <div class="metric">
-                    <div class="metric-value">{stats['open_trades']}</div>
-                    <div class="metric-label">صفقات مفتوحة</div>
-                </div>
+                <div class="metric-value">{stats['open_trades']}</div>
+                <div class="metric-label">صفقات مفتوحة</div>
             </div>
             <div class="card">
-                <div class="metric">
-                    <div class="metric-value">${stats['avg_profit']:.2f}</div>
-                    <div class="metric-label">متوسط الربح</div>
-                </div>
+                <div class="metric-value">${stats['avg_profit']:.2f}</div>
+                <div class="metric-label">متوسط الربح</div>
             </div>
             <div class="card">
-                <div class="metric">
-                    <div class="metric-value">${stats['max_profit']:.2f}</div>
-                    <div class="metric-label">أعلى ربح</div>
-                </div>
+                <div class="metric-value">${stats['max_profit']:.2f}</div>
+                <div class="metric-label">أعلى ربح</div>
             </div>
         </div>
         
-        <div class="charts-grid">
-            <div class="chart-container">
-                <h3>📈 توزيع الأرباح</h3>
-                <canvas id="profitChart" height="200"></canvas>
-            </div>
-            <div class="chart-container">
-                <h3>📊 حالة الصفقات</h3>
-                <canvas id="statusChart" height="200"></canvas>
-            </div>
-        </div>
-        
-        <div class="card">
+        <div class="card" style="grid-column:1/-1;">
             <h3 style="margin-bottom:20px;color:#00ff88;">📋 آخر 15 صفقة</h3>
-            <div class="trades-table">
+            <div style="overflow-x:auto;">
                 <table class="table">
                     <thead>
                         <tr>
@@ -295,6 +259,7 @@ async def dashboard():
     for trade in recent_trades:
         profit = trade.get("profit", 0)
         profit_class = "profit" if profit > 0 else "loss"
+        profit_display = f"${profit:.2f} USDT" if profit else "-"
         html_content += f"""
         <tr class="trade-{'open' if trade['status']=='OPEN' else 'closed'}">
             <td><span style="color:{'#00ff88' if trade['type']=='BUY' else '#ff4444'}">{trade['type']}</span></td>
@@ -302,59 +267,30 @@ async def dashboard():
             <td style="color:#00ff88;">${trade['price']:.4f}</td>
             <td>{trade['amount']:.6f}</td>
             <td>${trade.get('sell_price',0):.4f}</td>
-            <td class="{profit_class}">{"$" + str(profit) + " USDT" if profit else '-'}</td>
+            <td class="{profit_class}">{profit_display}</td>
             <td style="font-size:0.85em;color:#aaa;">{trade['timestamp'][:16]}</td>
         </tr>
         """
     
-    html_content += f"""
+    html_content += """
                     </tbody>
                 </table>
             </div>
         </div>
     </div>
     
-    <button class="fab" onclick="testWebhook()">🔔 Test Alert</button>
+    <button class="fab" onclick="testWebhook()">🔔 Test</button>
     
     <script>
-        // Charts
-        const profitCtx = document.getElementById('profitChart').getContext('2d');
-        new Chart(profitCtx, {{
-            type: 'doughnut',
-            data: {{
-                labels: ['أرباح', 'خسائر'],
-                datasets: [{{
-                    data: [{stats['total_profit'] if stats['total_profit']>0 else 0}, {abs(stats['total_profit']) if stats['total_profit']<0 else 0}],
-                    backgroundColor: ['#00ff88', '#ff4444']
-                }}]
-            }},
-            options: {{plugins: {{legend: {{position: 'bottom'}}}}}
-        }});
-        
-        const statusCtx = document.getElementById('statusChart').getContext('2d');
-        new Chart(statusCtx, {{
-            type: 'pie',
-            data: {{
-                labels: ['مفتوحة', 'مغلقة'],
-                datasets: [{{
-                    data: [{stats['open_trades']}, {stats['closed_trades']}],
-                    backgroundColor: ['#00ff88', '#666']
-                }}]
-            }}
-        }});
-        
-        // Auto refresh
         setInterval(() => location.reload(), 5000);
-        
-        // Test webhook
-        async function testWebhook() {{
-            await fetch('/webhook', {{
+        async function testWebhook() {
+            await fetch('/webhook', {
                 method: 'POST',
-                headers: {{'Content-Type': 'application/json'}},
-                body: JSON.stringify({{'message': 'buy ETHUSDT 50'}})
-            }});
-            alert('✅ تم إرسال تنبيه تجريبي!');
-        }}
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({'message': 'buy ETHUSDT 50'})
+            });
+            alert('✅ تم إرسال صفقة تجريبية!');
+        }
     </script>
 </body>
 </html>
