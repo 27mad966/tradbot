@@ -1,16 +1,15 @@
 import os
-import json
 import asyncio
 import ccxt
 from datetime import datetime
 from collections import deque
-from fastapi import FastAPI, Request, WebSocket
+from fastapi import FastAPI, WebSocket
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
 
-app = FastAPI(title="🤖 Sovereign Bot Final Edition")
+app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
@@ -21,10 +20,11 @@ app.add_middleware(
 
 class TradingBot:
     def __init__(self):
-        # القراءة بناءً على إعداداتك الحالية في ريندر (image_dd9710.png)
-        self.api_key = os.getenv("API_SECRET", "").strip() 
-        self.secret_key = os.getenv("Secret_Key", "").strip()
+        # القراءة من الأسماء التي أكدت عليها أنت يا مدير
+        self.api_key = os.getenv("BINANCE_API_KEY", "").strip()
+        self.secret_key = os.getenv("BINANCE_SECRET_KEY", "").strip()
         
+        # إعداد المحرك
         self.exchange = ccxt.binance({
             'apiKey': self.api_key,
             'secret': self.secret_key,
@@ -36,7 +36,7 @@ class TradingBot:
             }
         })
         
-        # استخدام الروابط الرسمية للتست نت (testnet.binance.vision)
+        # تثبيت روابط التست نت الأصلية
         self.exchange.urls['api']['public'] = 'https://testnet.binance.vision/api'
         self.exchange.urls['api']['private'] = 'https://testnet.binance.vision/api'
         
@@ -46,54 +46,59 @@ class TradingBot:
 
     async def update_balance(self):
         try:
+            # التحقق الداخلي من وصول المفاتيح للكود
             if not self.api_key or not self.secret_key:
-                self.balance = -1 # تنبيه في حال عدم قراءة المتغيرات
+                self.balance = -1 # رمز لإظهار رسالة "المفاتيح لم تصل للكود"
                 return
 
             bal = self.exchange.fetch_balance()
-            # جلب أي عملة بها رصيد (BTC, BNB, USDT)
-            active_balances = {k: v['total'] for k, v in bal['total'].items() if v > 0}
+            active_assets = {k: v['total'] for k, v in bal['total'].items() if v > 0}
             
-            if "USDT" in active_balances:
-                self.balance = active_balances["USDT"]
+            if "USDT" in active_assets:
+                self.balance = active_assets["USDT"]
                 self.active_symbol = "USDT"
-            elif active_balances:
-                self.active_symbol = list(active_balances.keys())[0]
-                self.balance = active_balances[self.active_symbol]
+            elif active_assets:
+                self.active_symbol = list(active_assets.keys())[0]
+                self.balance = active_assets[self.active_symbol]
             else:
                 self.balance = 0.0
         except Exception as e:
             print(f"Connection Error: {e}")
-            self.balance = -2 # خطأ في الصلاحية
+            self.balance = -2 # خطأ في الصلاحية من طرف بايننس
 
     def execute_trade(self, pair, direction):
-        # تصحيح الزوج ليتناسب مع بايننس (SOL/USDT)
+        # التأكد من صحة المفاتيح قبل التنفيذ لضمان عدم ظهور أخطاء apiKey
+        if not self.api_key:
+            err = {'time': datetime.now().strftime("%H:%M:%S"), 'pair': pair, 'action': "خطأ", 'price': 0, 'status': "❌ الكود لم يقرأ المفاتيح من ريندر"}
+            self.trades.appendleft(err)
+            return err
+
         pair = pair.replace("USDTUSDT", "USDT").upper()
         if "/" not in pair:
             pair = f"{pair[:-4]}/USDT" if pair.endswith("USDT") else f"{pair}/USDT"
         
         try:
             ticker = self.exchange.fetch_ticker(pair)
-            price = ticker['last']
-            amount_coin = 100.0 / price
+            amount_coin = 100.0 / ticker['last']
             
             if direction.lower() in ["buy", "long"]:
                 self.exchange.create_market_buy_order(pair, amount_coin)
-                action = "شراء"
+                act = "شراء"
             else:
                 self.exchange.create_market_sell_order(pair, amount_coin)
-                action = "بيع"
+                act = "بيع"
 
-            entry = {'time': datetime.now().strftime("%H:%M:%S"), 'pair': pair, 'action': action, 'price': round(price, 4), 'status': "✅ ناجح"}
-            self.trades.appendleft(entry)
-            return entry
+            res = {'time': datetime.now().strftime("%H:%M:%S"), 'pair': pair, 'action': act, 'price': round(ticker['last'], 4), 'status': "✅ ناجح"}
+            self.trades.appendleft(res)
+            return res
         except Exception as e:
-            entry = {'time': datetime.now().strftime("%H:%M:%S"), 'pair': pair, 'action': "خطأ", 'price': 0, 'status': f"❌ {str(e)[:30]}"}
-            self.trades.appendleft(entry)
-            return entry
+            res = {'time': datetime.now().strftime("%H:%M:%S"), 'pair': pair, 'action': "خطأ", 'price': 0, 'status': f"❌ {str(e)[:25]}"}
+            self.trades.appendleft(res)
+            return res
 
 bot = TradingBot()
 
+# --- واجهة الداشبورد ---
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
     return HTMLResponse(f"""
@@ -109,10 +114,10 @@ async def dashboard():
             .glass {{ background: rgba(23, 27, 34, 0.95); border: 1px solid #30363d; backdrop-filter: blur(10px); }}
         </style>
     </head>
-    <body class="p-6">
+    <body class="p-4 md:p-10">
         <div class="max-w-5xl mx-auto text-center">
-            <h1 class="text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-blue-500 mb-10">SOVEREIGN BOT</h1>
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+            <h1 class="text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-blue-500 mb-10">SOVEREIGN STATION</h1>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8 text-center">
                 <div class="glass p-8 rounded-3xl">
                     <p class="text-gray-500 text-sm mb-2 uppercase">الرصيد المتاح</p>
                     <div class="text-4xl font-black text-white"><span id="balance">جاري التحميل...</span> <span id="symbol" class="text-xl"></span></div>
@@ -124,16 +129,16 @@ async def dashboard():
             </div>
             <div class="glass rounded-3xl overflow-hidden shadow-2xl text-right">
                 <div class="p-6 border-b border-gray-800 flex justify-between items-center">
-                    <h2 class="font-bold text-xl">📊 سجل العمليات الحية</h2>
-                    <span class="text-green-500 text-xs animate-pulse">● متصل</span>
+                    <h2 class="font-bold text-xl text-white">📊 سجل العمليات الحية</h2>
+                    <span class="text-green-500 text-xs animate-pulse">● متصل بالبث</span>
                 </div>
-                <div class="overflow-x-auto">
+                <div class="overflow-x-auto text-right">
                     <table class="w-full">
                         <thead class="bg-white/5 text-gray-400 text-sm">
                             <tr><th class="p-4">الوقت</th><th class="p-4">الزوج</th><th class="p-4">العملية</th><th class="p-4">السعر</th><th class="p-4">الحالة</th></tr>
                         </thead>
                         <tbody id="trades-table" class="divide-y divide-gray-800 text-sm text-gray-300">
-                            <tr><td colspan="5" class="p-10 text-center">انتظار التحديث...</td></tr>
+                            <tr><td colspan="5" class="p-10 text-center">بانتظار الإشارة...</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -177,7 +182,7 @@ async def websocket_endpoint(websocket: WebSocket):
         while True:
             await bot.update_balance()
             await websocket.send_json({"balance": bot.balance, "symbol": bot.active_symbol, "total_trades": len(bot.trades), "trades": list(bot.trades)})
-            await asyncio.sleep(2)
+            await asyncio.sleep(3)
     except: pass
 
 class Signal(BaseModel):
