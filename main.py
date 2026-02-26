@@ -19,7 +19,9 @@ settings = {
     "buy_value": 100.0,
     "sell_mode": "percent",
     "sell_value": 1.0,
-    "active": True
+    "active": True,          # تشغيل/إيقاف عادي
+    "emergency_stop": False, # إيقاف طوارئ - يوقف كل شيء فوراً
+    "mode": "spot"           # spot أو future
 }
 
 active_connections: list[WebSocket] = []
@@ -272,6 +274,24 @@ td{padding:13px 20px;font-size:12px;text-align:right;vertical-align:middle}
 
 ::-webkit-scrollbar{width:4px}
 ::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+
+/* Control panel */
+.ctrl-panel{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:18px 24px;margin-bottom:16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.ctrl-label{font-size:10px;font-family:var(--mono);color:var(--muted);text-transform:uppercase;letter-spacing:1.5px;margin-left:4px}
+.btn{padding:9px 18px;border-radius:9px;font-family:var(--mono);font-size:11px;font-weight:700;cursor:pointer;border:1px solid;transition:all .2s;letter-spacing:1px;display:flex;align-items:center;gap:6px}
+.btn-green{background:var(--green-dim);color:var(--green);border-color:rgba(0,230,118,.3)}
+.btn-green:hover{background:rgba(0,230,118,.2)}
+.btn-yellow{background:rgba(255,200,0,.1);color:#ffc800;border-color:rgba(255,200,0,.3)}
+.btn-yellow:hover{background:rgba(255,200,0,.18)}
+.btn-red{background:var(--red-dim);color:var(--red);border-color:rgba(255,71,87,.3)}
+.btn-red:hover{background:rgba(255,71,87,.25)}
+.btn-gray{background:rgba(255,255,255,.05);color:var(--muted);border-color:var(--border)}
+.state-badge{padding:6px 14px;border-radius:20px;font-family:var(--mono);font-size:11px;font-weight:700;border:1px solid}
+.state-on{background:var(--green-dim);color:var(--green);border-color:rgba(0,230,118,.3)}
+.state-off{background:rgba(255,200,0,.1);color:#ffc800;border-color:rgba(255,200,0,.3)}
+.state-emergency{background:var(--red-dim);color:var(--red);border-color:rgba(255,71,87,.4);animation:emergencyPulse 1s infinite}
+@keyframes emergencyPulse{0%,100%{opacity:1}50%{opacity:.5}}
+.divider{width:1px;height:28px;background:var(--border)}
 </style>
 </head>
 <body>
@@ -287,6 +307,30 @@ td{padding:13px 20px;font-size:12px;text-align:right;vertical-align:middle}
     <span id="clock">--:--:--</span>
     <span style="flex:1"></span>
     <span>آخر تحديث:</span><span id="upd" style="color:var(--text)">--</span>
+  </div>
+
+  <!-- Control Panel -->
+  <div class="ctrl-panel">
+    <span class="ctrl-label">التحكم:</span>
+    <span id="botStateBadge" class="state-badge state-on">⏳ جاري التحميل</span>
+    <div class="divider"></div>
+    <button class="btn btn-green" onclick="toggleBot()" id="toggleBtn">⏸ إيقاف البوت</button>
+    <button class="btn btn-yellow" onclick="showPortfolio()">📊 تفاصيل المحفظة</button>
+    <div class="divider"></div>
+    <button class="btn btn-red" onclick="liq()">⚠ تصفية الكل</button>
+    <button class="btn btn-red" onclick="emergencyStop()" id="emergencyBtn" style="font-size:12px">🚨 إيقاف طوارئ</button>
+    <button class="btn btn-gray" onclick="resume()" id="resumeBtn" style="display:none">▶ استئناف</button>
+  </div>
+
+  <!-- Portfolio Modal -->
+  <div id="portfolioModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:100;align-items:center;justify-content:center">
+    <div style="background:#0d1117;border:1px solid rgba(240,180,41,.2);border-radius:18px;padding:28px;max-width:520px;width:90%;max-height:80vh;overflow-y:auto">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
+        <span style="font-family:var(--mono);color:var(--gold);font-weight:700;letter-spacing:2px">تفاصيل المحفظة</span>
+        <button onclick="document.getElementById('portfolioModal').style.display='none'" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:18px">✕</button>
+      </div>
+      <div id="portfolioContent" style="font-family:var(--mono);font-size:12px;color:var(--text)">جاري التحميل...</div>
+    </div>
   </div>
 
   <div class="stats">
@@ -335,6 +379,9 @@ function render(d) {
   const now = new Date();
   document.getElementById('clock').textContent = now.toLocaleTimeString('ar-SA');
   document.getElementById('upd').textContent = now.toLocaleTimeString('ar-SA');
+
+  // Update control panel state
+  if (d.settings) updateControls(d.settings);
 
   const b = d.balance;
   document.getElementById('cTotal').textContent = fmt(b.total);
@@ -385,6 +432,97 @@ function render(d) {
   }).join('');
 }
 
+function updateControls(s) {
+  const badge = document.getElementById('botStateBadge');
+  const toggleBtn = document.getElementById('toggleBtn');
+  const emergencyBtn = document.getElementById('emergencyBtn');
+  const resumeBtn = document.getElementById('resumeBtn');
+
+  if (s.emergency_stop) {
+    badge.textContent = '🚨 إيقاف طوارئ';
+    badge.className = 'state-badge state-emergency';
+    toggleBtn.style.display = 'none';
+    emergencyBtn.style.display = 'none';
+    resumeBtn.style.display = 'flex';
+  } else if (s.active) {
+    badge.textContent = '✅ البوت نشط';
+    badge.className = 'state-badge state-on';
+    toggleBtn.textContent = '⏸ إيقاف البوت';
+    toggleBtn.className = 'btn btn-yellow';
+    toggleBtn.style.display = 'flex';
+    emergencyBtn.style.display = 'flex';
+    resumeBtn.style.display = 'none';
+  } else {
+    badge.textContent = '⏸ البوت متوقف';
+    badge.className = 'state-badge state-off';
+    toggleBtn.textContent = '▶ تشغيل البوت';
+    toggleBtn.className = 'btn btn-green';
+    toggleBtn.style.display = 'flex';
+    emergencyBtn.style.display = 'flex';
+    resumeBtn.style.display = 'none';
+  }
+}
+
+async function toggleBot() {
+  await fetch('/control/toggle', {method:'POST'});
+}
+
+async function emergencyStop() {
+  if (!confirm('⚠️ إيقاف طوارئ سيوقف البوت ويبيع جميع العملات فوراً!\nهل أنت متأكد؟')) return;
+  await fetch('/control/emergency', {method:'POST'});
+}
+
+async function resume() {
+  await fetch('/control/resume', {method:'POST'});
+}
+
+async function showPortfolio() {
+  document.getElementById('portfolioModal').style.display = 'flex';
+  document.getElementById('portfolioContent').innerHTML = '<div style="text-align:center;padding:20px;color:var(--muted)">⏳ جاري التحميل...</div>';
+  try {
+    const res = await fetch('/portfolio');
+    const d = await res.json();
+    const b = d.balance;
+    const h = b.holdings || {};
+    const holdingsHtml = Object.keys(h).length === 0
+      ? '<div style="color:var(--muted);text-align:center;padding:10px">لا توجد عملات محتفظ بها</div>'
+      : Object.entries(h).map(([c,v]) => `
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid rgba(255,255,255,.05)">
+          <span style="color:var(--gold);font-weight:700">${c}</span>
+          <span style="color:var(--muted)">${v.amount}</span>
+          <span>@ ${fmt(v.price,2)}</span>
+          <span style="color:var(--text)">${fmt(v.value,2)} $</span>
+          <span class="${v.unrealized_pnl>=0?'pos':'neg'}">${v.unrealized_pnl>=0?'+':''}${fmt(v.unrealized_pnl,2)}$</span>
+        </div>`).join('');
+
+    document.getElementById('portfolioContent').innerHTML = `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:18px">
+        <div style="background:rgba(240,180,41,.08);border:1px solid rgba(240,180,41,.15);border-radius:10px;padding:14px">
+          <div style="color:var(--muted);font-size:9px;letter-spacing:1px;margin-bottom:6px">إجمالي المحفظة</div>
+          <div style="color:var(--gold);font-size:18px;font-weight:700">${fmt(b.total)} USDT</div>
+        </div>
+        <div style="background:rgba(0,180,216,.08);border:1px solid rgba(0,180,216,.15);border-radius:10px;padding:14px">
+          <div style="color:var(--muted);font-size:9px;letter-spacing:1px;margin-bottom:6px">رصيد USDT الحر</div>
+          <div style="color:var(--blue);font-size:18px;font-weight:700">${fmt(b.usdt)} USDT</div>
+        </div>
+        <div style="background:${b.pnl>=0?'rgba(0,230,118,.08)':'rgba(255,71,87,.08)'};border:1px solid ${b.pnl>=0?'rgba(0,230,118,.15)':'rgba(255,71,87,.15)'};border-radius:10px;padding:14px">
+          <div style="color:var(--muted);font-size:9px;letter-spacing:1px;margin-bottom:6px">صافي الربح/الخسارة</div>
+          <div style="color:${b.pnl>=0?'var(--green)':'var(--red)'};font-size:18px;font-weight:700">${b.pnl>=0?'+':''}${fmt(b.pnl)} $</div>
+          <div style="color:var(--muted);font-size:10px;margin-top:4px">${b.pnl>=0?'+':''}${b.pnl_pct}%</div>
+        </div>
+        <div style="background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:10px;padding:14px">
+          <div style="color:var(--muted);font-size:9px;letter-spacing:1px;margin-bottom:6px">إجمالي الصفقات</div>
+          <div style="color:var(--text);font-size:18px;font-weight:700">${d.trades_count}</div>
+        </div>
+      </div>
+      <div style="color:var(--muted);font-size:9px;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:10px">العملات المحتفظ بها</div>
+      ${holdingsHtml}
+    `;
+  } catch(e) {
+    document.getElementById('portfolioContent').innerHTML = '<div style="color:var(--red)">❌ خطأ في جلب البيانات</div>';
+  }
+}
+
 async function liq() {
   if(!confirm('هل أنت متأكد من تصفية جميع المراكز المفتوحة؟')) return;
   await fetch('/liquidate',{method:'POST'});
@@ -413,11 +551,11 @@ async def ws_endpoint(ws: WebSocket):
     print(f"🔌 اتصال جديد | إجمالي: {len(active_connections)}")
     try:
         bal = await bot.get_balance()
-        await ws.send_json({"balance": bal, "trades": list(bot.trades)})
+        await ws.send_json({"balance": bal, "trades": list(bot.trades), "settings": settings})
         while True:
             await asyncio.sleep(5)
             bal = await bot.get_balance()
-            await ws.send_json({"balance": bal, "trades": list(bot.trades)})
+            await ws.send_json({"balance": bal, "trades": list(bot.trades), "settings": settings})
     except:
         pass
     finally:
@@ -428,8 +566,10 @@ async def ws_endpoint(ws: WebSocket):
 
 @app.post("/webhook")
 async def webhook(s: Signal):
+    if settings.get("emergency_stop", False):
+        return {"status": "emergency_stop", "msg": "⚠️ إيقاف طوارئ مفعّل"}
     if not settings.get("active", True):
-        return {"status": "inactive"}
+        return {"status": "inactive", "msg": "⏸ البوت متوقف"}
     result = bot.execute(s.pair, s.direction)
     bal = await bot.get_balance()
     await broadcast({"balance": bal, "trades": list(bot.trades)})
@@ -447,6 +587,52 @@ async def liquidate():
 @app.get("/health")
 async def health():
     return {"status": "ok", "trades": len(bot.trades), "connections": len(active_connections)}
+
+
+@app.get("/portfolio")
+async def portfolio():
+    """تفاصيل كاملة للمحفظة"""
+    bal = await bot.get_balance()
+    return {
+        "balance": bal,
+        "settings": settings,
+        "trades_count": len(bot.trades),
+        "recent_trades": list(bot.trades)[:10]
+    }
+
+
+@app.post("/control/toggle")
+async def toggle_bot():
+    """تشغيل / إيقاف البوت"""
+    settings["active"] = not settings["active"]
+    state = "نشط ✅" if settings["active"] else "متوقف ⏸"
+    print(f"🎛️ حالة البوت: {state}")
+    bal = await bot.get_balance()
+    await broadcast({"balance": bal, "trades": list(bot.trades), "settings": settings})
+    return {"active": settings["active"], "msg": state}
+
+
+@app.post("/control/emergency")
+async def emergency_stop():
+    """إيقاف طوارئ + تصفية فورية"""
+    settings["emergency_stop"] = True
+    settings["active"] = False
+    print("🚨 إيقاف طوارئ! تصفية جميع المراكز...")
+    bot.liquidate_all()
+    bal = await bot.get_balance()
+    await broadcast({"balance": bal, "trades": list(bot.trades), "settings": settings})
+    return {"ok": True, "msg": "تم إيقاف الطوارئ وتصفية المحفظة"}
+
+
+@app.post("/control/resume")
+async def resume_bot():
+    """استئناف بعد إيقاف الطوارئ"""
+    settings["emergency_stop"] = False
+    settings["active"] = True
+    print("▶️ استئناف التشغيل")
+    bal = await bot.get_balance()
+    await broadcast({"balance": bal, "trades": list(bot.trades), "settings": settings})
+    return {"ok": True, "msg": "تم استئناف التشغيل"}
 
 
 if __name__ == "__main__":
