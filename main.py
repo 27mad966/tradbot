@@ -6,55 +6,46 @@ from fastapi.responses import HTMLResponse
 
 app = FastAPI()
 
-class SmartBot:
+class HardTestBot:
     def __init__(self):
-        self.api_key = os.getenv("BINANCE_API_KEY", "").strip()
-        self.secret_key = os.getenv("BINANCE_SECRET_KEY", "").strip()
+        # ضع مفاتيحك هنا مباشرة للتجربة النهائية
+        self.api_key = "XnEm0wn9uAFLpwFAXZZ3UhkFAWiYgWU5h5fIRnucvVoylC6BfPEabdKDJ9u8NX5Q" 
+        self.secret_key = "YFOf0OwhIpHIlDiaPDGfkLCHypLYEk9uHAt0AMcE7VQ4Kcy065oKQj8eSMjc4CIH"
 
-    async def probe_servers(self):
-        reports = []
-        # القائمة المستهدفة للفحص: النظام القديم والنظام الجديد
-        endpoints = [
-            {"name": "Spot Testnet (Vision)", "url": "https://testnet.binance.vision/api"},
-            {"name": "Binance Demo (Global)", "url": "https://api.binance.com"} # الديمو الجديد غالباً يستخدم الرابط الرئيسي مع وضع الساندبوكس
-        ]
+        self.exchange = ccxt.binance({
+            'apiKey': self.api_key.strip(),
+            'secret': self.secret_key.strip(),
+            'enableRateLimit': True,
+            'options': {'adjustForTimeDifference': True}
+        })
+        # إجبار الاتصال برابط التست نت الظاهر في صورك السابقة
+        self.exchange.urls['api']['public'] = 'https://testnet.binance.vision/api'
+        self.exchange.urls['api']['private'] = 'https://testnet.binance.vision/api'
 
-        for server in endpoints:
-            try:
-                exchange = ccxt.binance({
-                    'apiKey': self.api_key,
-                    'secret': self.secret_key,
-                    'enableRateLimit': True,
-                    'options': {'adjustForTimeDifference': True}
-                })
-                exchange.set_sandbox_mode(True) # تفعيل وضع التجربة
-                
-                # تغيير الرابط يدوياً للفحص
-                exchange.urls['api']['public'] = server['url']
-                exchange.urls['api']['private'] = server['url']
-                
-                bal = exchange.fetch_balance()
-                assets = {k: v for k, v in bal['total'].items() if v > 0}
-                reports.append(f"✅ {server['name']}: متصل بنجاح! الرصيد المكتشف: {assets}")
-                break # إذا نجح الاتصال بواحد، نتوقف
-            except Exception as e:
-                reports.append(f"❌ {server['name']}: رفض المفاتيح. السبب: {str(e)[:50]}")
-        
-        return reports
+    async def get_real_status(self):
+        try:
+            # محاولة جلب الحساب
+            bal = self.exchange.fetch_balance()
+            assets = {k: v for k, v in bal['total'].items() if v > 0}
+            if assets:
+                return f"✅ نجاح باهر! الرصيد المكتشف هو: {assets}"
+            else:
+                return "✅ تم الاتصال بنجاح، لكن الحساب صفر (USDT 0). تحتاج لشحن الحساب."
+        except Exception as e:
+            return f"❌ لا تزال بايننس ترفض! السبب الحقيقي: {str(e)}"
 
-bot_check = SmartBot()
+bot = HardTestBot()
 
 @app.get("/", response_class=HTMLResponse)
 async def home():
-    results = await bot_check.probe_servers()
-    content = "".join([f"<p>{r}</p>" for r in results])
+    result = await bot.get_real_status()
     return f"""
-    <body style="background:#0b0e11; color:white; font-family:sans-serif; padding:50px;">
-        <h2 style="color:#f0b90b;">نتائج فحص الخوادم الذكي</h2>
-        <div style="border:1px solid #444; padding:20px; border-radius:15px; background:#161a1e;">
-            {content}
+    <body style="background:#0b0e11; color:white; font-family:sans-serif; padding:50px; text-align:center;">
+        <h1 style="color:#f0b90b;">اختبار الاتصال المباشر</h1>
+        <div style="font-size:1.5em; border:2px solid #f0b90b; padding:30px; border-radius:20px; display:inline-block;">
+            {result}
         </div>
-        <p style="color:#888; margin-top:20px;">إذا استمر الرفض في الاثنين، فهناك "مسافة مخفية" أو "حرف ناقص" في إعدادات Render لا تراه العين المجردة.</p>
+        <p style="margin-top:20px; color:#888;">إذا ظهر "نجاح"، فالمشكلة في إعدادات Environment في ريندر.</p>
     </body>
     """
 
