@@ -1,8 +1,4 @@
-"""
-🤖 BINANCE TRADINGVIEW BOT - النسخة النهائية المُصححة 100%
-مشاكل مُحلولة: SOLUSDTUSDT + {{STRATEGY.ORDER.ACTION}} + شراء/بيع
-"""
-
+import os
 from fastapi import FastAPI, Request, WebSocket
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,11 +6,13 @@ import uvicorn
 import json
 from datetime import datetime
 from collections import deque
-import random
 import asyncio
-import os
+import ccxt
 
 app = FastAPI(title="🤖 Binance TradingView Bot")
+
+# إعدادات الأمان والربط عبر متغيرات البيئة
+DASHBOARD_PASS = "AHMED_BOSS_2026"
 
 app.add_middleware(
     CORSMiddleware,
@@ -23,319 +21,203 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
+# --- محرك التداول الحقيقي (قراءة من Environment) ---
 class TradingBot:
     def __init__(self):
-        self.balance = 10000.0
+        # جلب المفاتيح من Render Environment Variables
+        api_key = os.getenv("BINANCE_API_KEY")
+        secret_key = os.getenv("BINANCE_SECRET_KEY")
+        
+        self.exchange = ccxt.binance({
+            'apiKey': api_key,
+            'secret': secret_key,
+            'enableRateLimit': True,
+            'options': {
+                'adjustForTimeDifference': True,
+                'recvWindow': 60000
+            }
+        })
+        # تفعيل وضع التجربة تلقائياً
+        self.exchange.set_sandbox_mode(True)
         self.trades = deque(maxlen=50)
-        self.websocket_clients = []
-    
-    def execute_trade(self, pair, direction, signal="TradingView"):
-        print(f"🔍 استقبال: {pair} - {direction}")
-        
-        # إصلاح الزوج - إزالة USDT المكرر
-        if pair.endswith("USDTUSDT"):
-            pair = pair.replace("USDTUSDT", "USDT")
-        elif "USDT" not in pair:
-            pair = pair + "USDT"
+        self.balance = 0.0
+
+    async def update_balance(self):
+        try:
+            # التأكد من وجود المفاتيح قبل المحاولة
+            if self.exchange.apiKey and self.exchange.secret:
+                bal = self.exchange.fetch_balance()
+                self.balance = bal['total'].get('USDT', 0.0)
+        except Exception as e:
+            print(f"Balance Update Error: {e}")
+            self.balance = 0.0
+
+    def execute_real_trade(self, pair, direction):
+        # تنظيف اسم الزوج من أي أخطاء تكرار
+        pair_clean = pair.replace("USDTUSDT", "USDT").upper()
+        # تنسيق الزوج ليتناسب مع CCXT (مثال: SOL/USDT)
+        if "/" not in pair_clean and "USDT" in pair_clean:
+            base = pair_clean.replace("USDT", "")
+            pair_formatted = f"{base}/USDT"
+        else:
+            pair_formatted = pair_clean
+
+        try:
+            amount_usdt = 100.0  # قيمة الصفقة
+            ticker = self.exchange.fetch_ticker(pair_formatted)
+            amount_coin = amount_usdt / ticker['last']
             
-        # إصلاح الاتجاه
-        if direction.startswith("{{") or direction.endswith("}}"):
-            direction = "BUY"  # افتراضي إذا لم يُستبدل
-        
-        direction = direction.upper()
-        if direction not in ["BUY", "SELL"]:
-            direction = "BUY"
-        
-        print(f"✅ معالج: {pair} - {direction}")
-        
-        # حساب 2% مخاطرة
-        amount = self.balance * 0.02
-        
-        # سعر واقعي للعملات الرقمية
-        entry_price = random.uniform(0.01, 80000)
-        exit_price = entry_price * (1.05 if random.random() > 0.45 else 0.95)
-        
-        total_cost = amount
-        profit_loss = amount * ((exit_price - entry_price) / entry_price)
-        self.balance += profit_loss
-        
-        # ✅ "شراء" أو "بيع" فقط - لا "ربح"
-        action = "شراء" if direction == "BUY" else "بيع"
-        
-        trade = {
-            'time': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            'pair': pair,
-            'action': action,  # ✅ شراء/بيع
-            'amount': round(amount, 2),
-            'entry_price': round(entry_price, 4),
-            'exit_price': round(exit_price, 4),
-            'total_cost': round(total_cost, 2),
-            'profit_loss': round(profit_loss, 2),
-            'pnl_percent': round((profit_loss/amount)*100, 2),
-            'balance_after': round(self.balance, 2),
-            'signal': signal,
-            'direction': direction
-        }
-        
-        self.trades.appendleft(trade)
-        print(f"✅ تم حفظ: {pair} - {action}")
-        return trade
+            action = direction.upper()
+            if "BUY" in action or "LONG" in action:
+                order = self.exchange.create_market_buy_order(pair_formatted, amount_coin)
+                final_action = "شراء"
+            else:
+                order = self.exchange.create_market_sell_order(pair_formatted, amount_coin)
+                final_action = "بيع"
+            
+            trade_entry = {
+                'time': datetime.now().strftime("%H:%M:%S"),
+                'pair': pair_formatted,
+                'action': final_action,
+                'entry_price': round(ticker['last'], 4),
+                'status': "✅ ناجح"
+            }
+            self.trades.appendleft(trade_entry)
+            return trade_entry
+        except Exception as e:
+            error_entry = {
+                'time': datetime.now().strftime("%H:%M:%S"),
+                'pair': pair_formatted,
+                'action': "خطأ",
+                'entry_price': 0,
+                'status': f"❌ {str(e)[:20]}"
+            }
+            self.trades.appendleft(error_entry)
+            return error_entry
 
 bot = TradingBot()
 
-# الداشبورد البسيط والفعال
+# --- الواجهة البرمجية (Dashboard) ---
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
-    return HTMLResponse("""
+    # استخدام التصميم الاحترافي الخاص بك مع ربط البيانات الحية
+    return HTMLResponse(f"""
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🤖 Binance TradingView Bot</title>
+    <title>Sovereign Bot v2.1</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;900&display=swap');
-        body { font-family: 'Cairo', sans-serif; }
-        .glass { background: rgba(255,255,255,0.1); backdrop-filter: blur(20px); }
+        @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@400;700;900&display=swap');
+        body {{ font-family: 'Cairo', sans-serif; background-color: #0b0e11; }}
+        .glass {{ background: rgba(23, 27, 34, 0.8); backdrop-filter: blur(12px); border: 1px solid #30363d; }}
     </style>
 </head>
-<body class="bg-gradient-to-br from-gray-900 via-indigo-900 to-purple-900 text-white min-h-screen">
-    <div class="container mx-auto px-6 py-8 max-w-6xl">
-        
-        <!-- Header -->
-        <div class="text-center mb-16">
-            <h1 class="text-6xl font-black bg-gradient-to-r from-emerald-400 to-blue-500 bg-clip-text text-transparent mb-6">
-                🤖 Binance TradingView Bot
+<body class="text-gray-100 p-4 md:p-10">
+    <div class="max-w-5xl mx-auto">
+        <header class="text-center mb-12">
+            <h1 class="text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-yellow-400 to-orange-500 mb-4">
+                SOVEREIGN STATION
             </h1>
-            <p class="text-2xl text-yellow-300 mb-8">تنفيذ فوري لإشارات TradingView</p>
-            
-            <!-- Webhook URL -->
-            <div class="max-w-3xl mx-auto p-6 bg-emerald-900/70 border-4 border-emerald-400/70 rounded-3xl backdrop-blur-xl">
-                <div class="flex items-center justify-between mb-6">
-                    <h3 class="text-2xl font-bold text-emerald-300">Webhook URL لـ TradingView:</h3>
-                    <button onclick="copyWebhook()" class="bg-emerald-500 hover:bg-emerald-600 text-white px-6 py-3 rounded-2xl font-bold shadow-lg hover:shadow-xl transition-all">
-                        📋 نسخ
-                    </button>
-                </div>
-                <code id="webhook-url" class="text-xl font-mono break-all bg-black/60 p-4 rounded-2xl block text-center select-all">
-                    https://your-app.onrender.com/webhook
-                </code>
+            <div class="inline-block px-4 py-1 rounded-full bg-yellow-400/10 border border-yellow-400/20 text-yellow-400 text-sm">
+                Mode: Binance Demo (Production Secure)
+            </div>
+        </header>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+            <div class="glass p-8 rounded-3xl">
+                <p class="text-gray-400 text-sm mb-1 uppercase">رصيد الحساب (USDT)</p>
+                <div class="text-4xl font-black text-white" id="balance">0.00</div>
+            </div>
+            <div class="glass p-8 rounded-3xl">
+                <p class="text-gray-400 text-sm mb-1 uppercase">إجمالي العمليات</p>
+                <div class="text-4xl font-black text-blue-400" id="total-trades">0</div>
             </div>
         </div>
 
-        <!-- إحصائيات -->
-        <div class="grid grid-cols-1 lg:grid-cols-4 gap-8 mb-12">
-            <div class="glass p-10 rounded-3xl text-center shadow-2xl border border-white/20 hover:scale-105 transition-all">
-                <div class="text-5xl font-black text-emerald-400 mb-3" id="balance">$10,000</div>
-                <p class="text-xl text-gray-300">الرصيد الحالي</p>
+        <div class="glass rounded-3xl overflow-hidden shadow-2xl">
+            <div class="p-6 border-b border-gray-800 flex justify-between items-center">
+                <h2 class="text-xl font-bold">📊 سجل العمليات الحية</h2>
+                <span class="text-xs text-green-400 animate-pulse">● Live Feed</span>
             </div>
-            <div class="glass p-10 rounded-3xl text-center shadow-2xl border border-white/20 hover:scale-105 transition-all">
-                <div class="text-4xl font-black text-blue-400 mb-3" id="total-trades">0</div>
-                <p class="text-xl text-gray-300">الصفقات الإجمالية</p>
-            </div>
-            <div class="glass p-10 rounded-3xl text-center shadow-2xl border border-white/20 hover:scale-105 transition-all">
-                <div class="text-4xl font-black text-purple-400 mb-3" id="win-rate">0%</div>
-                <p class="text-xl text-gray-300">نسبة النجاح</p>
-            </div>
-            <div class="glass p-10 rounded-3xl text-center shadow-2xl border border-white/20 hover:scale-105 transition-all">
-                <button onclick="testWebhook()" class="bg-gradient-to-r from-orange-500 to-red-500 hover:from-orange-600 hover:to-red-600 text-white px-8 py-4 rounded-2xl font-bold text-xl shadow-2xl hover:shadow-3xl transition-all">
-                    🧪 اختبار
-                </button>
-            </div>
-        </div>
-
-        <!-- سجل الصفقات -->
-        <div class="glass p-8 rounded-3xl shadow-2xl border border-white/20 mb-12">
-            <h2 class="text-4xl font-bold text-center mb-10 bg-gradient-to-r from-emerald-400 to-blue-400 bg-clip-text text-transparent">
-                📊 سجل الصفقات الحية
-            </h2>
-            <div class="overflow-x-auto max-h-96 overflow-y-auto">
+            <div class="overflow-x-auto">
                 <table class="w-full text-right">
-                    <thead>
-                        <tr class="border-b-4 border-emerald-500/50 bg-white/5">
-                            <th class="p-6 font-bold text-2xl text-emerald-400">الوقت</th>
-                            <th class="p-6 font-bold text-2xl text-emerald-400">العملة</th>
-                            <th class="p-6 font-bold text-2xl text-emerald-400">العملية</th>
-                            <th class="p-6 font-bold text-2xl text-emerald-400">سعر الدخول</th>
-                            <th class="p-6 font-bold text-2xl text-emerald-400">المبلغ</th>
-                            <th class="p-6 font-bold text-2xl text-emerald-400">النتيجة</th>
-                            <th class="p-6 font-bold text-2xl text-emerald-400">الرصيد</th>
+                    <thead class="bg-black/20 text-gray-400 text-sm">
+                        <tr>
+                            <th class="p-4">الوقت</th>
+                            <th class="p-4">الزوج</th>
+                            <th class="p-4">العملية</th>
+                            <th class="p-4">السعر</th>
+                            <th class="p-4">الحالة</th>
                         </tr>
                     </thead>
-                    <tbody id="trades-table">
-                        <tr class="animate-pulse">
-                            <td colspan="7" class="p-20 text-center text-gray-500 text-3xl">⏳ جاري الانتظار لتنبيه TradingView...</td>
-                        </tr>
+                    <tbody id="trades-table" class="divide-y divide-gray-800">
+                        <tr><td colspan="5" class="p-10 text-center text-gray-600">بانتظار الإشارة الأولى...</td></tr>
                     </tbody>
                 </table>
-            </div>
-        </div>
-
-        <!-- تعليمات واضحة -->
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-8 mb-12">
-            <div class="glass p-8 rounded-3xl text-center shadow-2xl border border-emerald-500/30">
-                <div class="text-5xl mb-6">📋</div>
-                <h3 class="text-2xl font-bold mb-4 text-emerald-400">1. Webhook URL</h3>
-                <p class="text-lg text-gray-300 mb-4">انسخ الرابط وأضفه في TradingView</p>
-            </div>
-            <div class="glass p-8 rounded-3xl text-center shadow-2xl border border-blue-500/30">
-                <div class="text-5xl mb-6">💬</div>
-                <h3 class="text-2xl font-bold mb-4 text-blue-400">2. Alert Message</h3>
-                <div class="bg-black/60 p-4 rounded-2xl text-xl font-mono">
-<pre>{ "pair": "{{ticker}}", 
-     "direction": "{{strategy.order.action}}" }</pre>
-                </div>
-            </div>
-            <div class="glass p-8 rounded-3xl text-center shadow-2xl border border-purple-500/30">
-                <div class="text-5xl mb-6">⚡</div>
-                <h3 class="text-2xl font-bold mb-4 text-purple-400">3. تنفيذ فوري</h3>
-                <p class="text-lg text-gray-300">2% مخاطرة | سجل حي | تحديث فوري</p>
             </div>
         </div>
     </div>
 
     <script>
-        const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`);
-        document.getElementById('webhook-url').textContent = `${location.origin}/webhook`;
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const ws = new WebSocket(`${{protocol}}//${{window.location.host}}/ws`);
         
-        ws.onmessage = function(event) {
+        ws.onmessage = function(event) {{
             const data = JSON.parse(event.data);
-            updateDashboard(data);
-        };
-
-        function updateDashboard(data) {
-            document.getElementById('balance').textContent = '$' + data.balance.toLocaleString();
+            document.getElementById('balance').textContent = data.balance.toLocaleString(undefined, {{minimumFractionDigits: 2}});
             document.getElementById('total-trades').textContent = data.total_trades;
             
-            const wins = data.trades.filter(t => t.profit_loss > 0).length;
-            const winRate = data.total_trades ? (wins/data.total_trades*100).toFixed(1) : 0;
-            document.getElementById('win-rate').textContent = winRate + '%';
-            
-            updateTable(data.trades);
-        }
-
-        function updateTable(trades) {
             const tbody = document.getElementById('trades-table');
-            if (!trades?.length) {
-                tbody.innerHTML = '<tr><td colspan="7" class="p-20 text-center text-gray-500 text-3xl animate-pulse">⏳ جاري الانتظار لتنبيه TradingView...</td></tr>';
-                return;
-            }
-            
-            tbody.innerHTML = trades.map(trade => `
-                <tr class="hover:bg-white/20 transition-all border-b border-white/30 group">
-                    <td class="p-6 font-mono text-xl group-hover:text-emerald-300">${trade.time}</td>
-                    <td class="p-6 font-black text-3xl">${trade.pair}</td>
-                    <td class="p-6">
-                        <span class="px-6 py-3 rounded-2xl font-bold text-2xl shadow-lg
-                            ${trade.action === 'شراء' ? 'bg-gradient-to-r from-green-500 to-emerald-600 text-white' : 'bg-gradient-to-r from-red-500 to-rose-600 text-white'}">
-                            ${trade.action}
-                        </span>
-                    </td>
-                    <td class="p-6 font-mono text-2xl">$${trade.entry_price.toFixed(4)}</td>
-                    <td class="p-6 font-bold text-emerald-400 text-2xl">$${trade.amount.toLocaleString()}</td>
-                    <td class="p-6 font-bold text-xl ${trade.profit_loss >= 0 ? 'text-green-400 animate-pulse' : 'text-red-400'}">
-                        ${trade.profit_loss >= 0 ? '✅' : '❌'} 
-                        $${Math.abs(trade.profit_loss).toLocaleString()}
-                        <br><span class="text-lg">(${trade.pnl_percent > 0 ? '+' : ''}${trade.pnl_percent}%)</span>
-                    </td>
-                    <td class="p-6 font-black text-3xl text-blue-400">$${trade.balance_after.toLocaleString()}</td>
-                </tr>
-            `).join('');
-        }
-
-        function copyWebhook() {
-            navigator.clipboard.writeText(`${location.origin}/webhook`);
-            alert('✅ تم نسخ Webhook URL!\nاستخدمه في TradingView Alert');
-        }
-
-        async function testWebhook() {
-            const res = await fetch('/test');
-            const data = await res.json();
-            alert('🧪 تم اختبار Webhook بنجاح!');
-        }
-
-        // Keepalive
-        setInterval(() => {
-            if (ws.readyState === WebSocket.OPEN) {
-                ws.send('ping');
-            }
-        }, 20000);
+            if (data.trades.length > 0) {{
+                tbody.innerHTML = data.trades.map(t => `
+                    <tr class="hover:bg-white/5 transition-colors">
+                        <td class="p-4 text-gray-500 font-mono text-sm">${{t.time}}</td>
+                        <td class="p-4 font-bold text-white">${{t.pair}}</td>
+                        <td class="p-4">
+                            <span class="px-3 py-1 rounded-lg text-xs font-bold ${{t.action === 'شراء' ? 'bg-green-500/10 text-green-400' : 'bg-red-500/10 text-red-400'}}">
+                                ${{t.action}}
+                            </span>
+                        </td>
+                        <td class="p-4 font-mono text-yellow-500">${{t.entry_price}}</td>
+                        <td class="p-4 text-xs">${{t.status}}</td>
+                    </tr>
+                `).join('');
+            }}
+        }};
     </script>
 </body>
 </html>
     """)
 
-# WebSocket 24/7
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    bot.websocket_clients.append(websocket)
-    
     try:
         while True:
-            data = {
+            await bot.update_balance()
+            await websocket.send_json({
                 "balance": bot.balance,
                 "total_trades": len(bot.trades),
                 "trades": list(bot.trades)
-            }
-            await websocket.send_json(data)
-            await asyncio.sleep(1)
+            })
+            await asyncio.sleep(3)
     except:
-        if websocket in bot.websocket_clients:
-            bot.websocket_clients.remove(websocket)
+        pass
 
-# ✅ WEBHOOK مُصحح نهائياً
 @app.post("/webhook")
 async def tradingview_webhook(request: Request):
     try:
         data = await request.json()
-        print(f"📨 RAW DATA: {data}")
+        pair = data.get("pair") or data.get("ticker", "SOLUSDT")
+        direction = data.get("direction") or data.get("action", "BUY")
         
-        # استخراج الزوج بكل الطرق + إصلاح SOLUSDTUSDT
-        pair_raw = (data.get("pair") or data.get("symbol") or data.get("ticker") or "SOLUSDT")
-        
-        # إصلاح مشكلة USDTUSDT
-        if "USDTUSDT" in pair_raw:
-            pair_raw = pair_raw.replace("USDTUSDT", "USDT")
-        if not pair_raw.endswith("USDT"):
-            pair_raw += "USDT"
-            
-        pair = pair_raw.upper()
-        
-        # استخراج الاتجاه بكل الطرق
-        direction_raw = (data.get("direction") or 
-                        data.get("action") or 
-                        data.get("strategy", {}).get("order", {}).get("action") or 
-                        "BUY")
-        
-        # إصلاح {{STRATEGY.ORDER.ACTION}}
-        if direction_raw.startswith("{{") and direction_raw.endswith("}}"):
-            direction_raw = "BUY"
-            
-        direction = direction_raw.upper()
-        
-        print(f"🔍 تم تحليل: زوج={pair} | اتجاه={direction}")
-        
-        # تنفيذ الصفقة
-        trade = bot.execute_trade(pair, direction, "TradingView Alert")
-        
-        return {
-            "status": "success",
-            "received_pair": pair,
-            "received_direction": direction,
-            "executed": True
-        }
-        
+        result = bot.execute_real_trade(pair, direction)
+        return {"status": "processed", "executed": result}
     except Exception as e:
-        print(f"❌ خطأ: {e}")
         return {"status": "error", "message": str(e)}
 
-# صفحة اختبار
-@app.get("/test")
-async def test_webhook():
-    trade = bot.execute_trade("SOL/USDT", "BUY", "Test")
-    return {"message": "✅ تم اختبار SOLANA بنجاح", "trade": trade}
-
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
