@@ -10,10 +10,10 @@
   BINANCE_SECRET_KEY           ← سر Spot
   BINANCE_FUTURES_API_KEY      ← مفتاح Futures (اختياري)
   BINANCE_FUTURES_SECRET_KEY   ← سر Futures (اختياري)
-  DASHBOARD_PASSWORD           ← كلمة سر الداشبورد (افتراضي: ahmad214242)
+  DASHBOARD_PASSWORD           ← كلمة سر الداشبورد (افتراضي: sovereign2025)
   INITIAL_BALANCE              ← رأس المال الابتدائي (افتراضي: 10000)
-  TELEGRAM_TOKEN               ← توكن بوت Telegram (8591906557:AAGxYzhXFOBGdqSpvIXJtiPuPj8oUSwdP8w)
-  TELEGRAM_CHAT_ID             ← معرف المحادثة (1770637)
+  TELEGRAM_TOKEN               ← توكن بوت Telegram (اختياري)
+  TELEGRAM_CHAT_ID             ← معرف المحادثة (اختياري)
 """
 
 import os, asyncio, ccxt, uvicorn, json
