@@ -459,10 +459,11 @@ class FuturesBot:
             'options': {
                 'adjustForTimeDifference': True,
                 'recvWindow': 15000,
-                'defaultType': 'future'
+                'defaultType': 'future',
+                'paper': True,
             }
         })
-        self.ex.set_sandbox_mode(True)
+        # Binance Futures Testnet محذوف — يستخدم Demo Trading
         self.trades:    deque = deque(maxlen=500)
         self.positions: dict  = {}
 
