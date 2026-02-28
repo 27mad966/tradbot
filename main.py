@@ -37,8 +37,8 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 # ══════════════════════════════════════════
 DASHBOARD_PASSWORD    = os.getenv("DASHBOARD_PASSWORD", "sovereign2025")
 INITIAL_BALANCE       = float(os.getenv("INITIAL_BALANCE", "10000"))
-TELEGRAM_TOKEN        = os.getenv("TELEGRAM_TOKEN", "")
-TELEGRAM_CHAT_ID      = os.getenv("TELEGRAM_CHAT_ID", "")
+TELEGRAM_TOKEN        = os.getenv("TELEGRAM_TOKEN", "8591906557:AAGxYzhXFOBGdqSpvIXJtiPuPj8oUSwdP8w")
+TELEGRAM_CHAT_ID      = os.getenv("TELEGRAM_CHAT_ID", "1770637")
 
 # الإعدادات الافتراضية — كل ميزة قابلة للتفعيل/الإلغاء
 settings = {
@@ -1789,3 +1789,4 @@ async def background_loop():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
