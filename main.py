@@ -37,8 +37,8 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 # ══════════════════════════════════════════
 DASHBOARD_PASSWORD    = os.getenv("DASHBOARD_PASSWORD", "sovereign2025")
 INITIAL_BALANCE       = float(os.getenv("INITIAL_BALANCE", "10000"))
-TELEGRAM_TOKEN        = os.getenv("TELEGRAM_TOKEN", "8591906557:AAGxYzhXFOBGdqSpvIXJtiPuPj8oUSwdP8w")
-TELEGRAM_CHAT_ID      = os.getenv("TELEGRAM_CHAT_ID", "1770637")
+TELEGRAM_TOKEN        = os.getenv("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID      = os.getenv("TELEGRAM_CHAT_ID", "")
 
 # الإعدادات الافتراضية — كل ميزة قابلة للتفعيل/الإلغاء
 settings = {
@@ -1581,6 +1581,7 @@ class Signal(BaseModel):
     direction: str
     reason:    Optional[str] = None
     market:    Optional[str] = None
+    model_config = {"extra": "ignore"}
 
 class AuthReq(BaseModel):
     password: str
@@ -1625,6 +1626,19 @@ async def ws_handler(ws: WebSocket):
 
 @app.post("/webhook")
 async def webhook(s: Signal):
+    # ── طباعة ما يصل من TradingView ───────
+    print(f"📨 Webhook received: pair={s.pair} | direction={s.direction} | market={s.market} | reason={s.reason}")
+
+    # ── تنظيف اسم الزوج تلقائياً ──────────
+    # يزيل أي لاحقة مثل .P أو BINANCE: أو :USDT
+    pair = s.pair.upper().strip()
+    pair = pair.replace("BINANCE:", "").replace("BYBIT:", "").replace("OKX:", "")
+    pair = pair.replace(".P", "").replace("-PERP", "").replace("_PERP", "")
+    if ":" in pair:
+        pair = pair.split(":")[1]
+    s = Signal(pair=pair, direction=s.direction, reason=s.reason, market=s.market)
+    print(f"✅ Cleaned pair: {s.pair}")
+
     # ── فحوصات الأمان ─────────────────────
     if settings.get("emergency_stop"):
         return {"status":"emergency_stop","ok":False}
@@ -1789,4 +1803,3 @@ async def background_loop():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
-
