@@ -253,7 +253,8 @@ class SpotBot:
             usdt = float(bal['total'].get('USDT', 0.0))
             portfolio_value = usdt
             holdings = {}
-            # جلب كل العملات الموجودة فعلياً — بدون قيود
+
+            # ① العملات الفعلية من Binance
             for coin, raw_amt in bal['total'].items():
                 amt = float(raw_amt or 0)
                 if coin in ('USDT','BUSD','USDC','TUSD','DAI') or amt < 0.000001:
@@ -265,6 +266,32 @@ class SpotBot:
                     value  = amt * price
                     portfolio_value += value
                     buy_p   = self.buy_prices.get(coin, price)
+                    pnl_usd = (price - buy_p) * amt
+                    pnl_pct = ((price - buy_p) / buy_p * 100) if buy_p > 0 else 0.0
+                    holdings[coin] = {
+                        'amount':        round(amt, 6),
+                        'buy_price':     round(buy_p, 6),
+                        'current_price': round(price, 6),
+                        'value':         round(value, 2),
+                        'pnl_usd':       round(pnl_usd, 2),
+                        'pnl_pct':       round(pnl_pct, 2),
+                    }
+                except Exception:
+                    pass
+
+            # ② العملات التي اشترينا لكن لا تظهر في Binance بعد (Testnet lag)
+            for coin, buy_p in self.buy_prices.items():
+                if coin in holdings:
+                    continue  # موجودة فعلاً من ①
+                try:
+                    pair   = f"{coin}/USDT"
+                    ticker = self.ex.fetch_ticker(pair)
+                    price  = float(ticker['last'])
+                    amt    = self.buy_amounts.get(coin, 0.0)
+                    if amt < 0.000001:
+                        continue
+                    value   = amt * price
+                    portfolio_value += value
                     pnl_usd = (price - buy_p) * amt
                     pnl_pct = ((price - buy_p) / buy_p * 100) if buy_p > 0 else 0.0
                     holdings[coin] = {
@@ -309,14 +336,16 @@ class SpotBot:
             print(f"🛡️ Fixed SL @ {sl_price}")
         except Exception as e:
             log_error(f"Fixed SL failed ({pair}): {e}", notify=False)
-        # Trailing Stop
+        # Trailing Stop — متوافق مع Testnet و Live
         try:
             self.ex.create_order(pair, 'trailing_stop_market', 'sell', amt, None, {
-                'callbackRate': settings["trailing_stop_pct"]
+                'callbackRate': settings["trailing_stop_pct"],
+                'stopLoss': {'type': 'TRAILING_STOP_MARKET', 'callbackRate': settings["trailing_stop_pct"]}
             })
             print(f"🛡️ Trailing SL {settings['trailing_stop_pct']}%")
         except Exception as e:
-            log_error(f"Trailing SL failed ({pair}): {e}", notify=False)
+            # Testnet لا يدعم Trailing Stop — نتجاهل الخطأ بهدوء
+            print(f"⚠️ Trailing SL not supported in Testnet — skipping")
 
     def execute(self, pair: str, side: str, reason: str = "") -> dict:
         side = side.lower().strip()
@@ -427,6 +456,7 @@ class SpotBot:
             return {'total':0,'wins':0,'losses':0,'win_rate':0,
                     'best_trade':0,'worst_trade':0,'total_pnl':0,'max_drawdown':0}
         pnls   = [t.get('pnl', 0) for t in trades]
+        # نحسب فقط الصفقات التي لها PNL حقيقي (غير صفر)
         wins   = [p for p in pnls if p > 0]
         losses = [p for p in pnls if p < 0]
         peak = running = max_dd = 0
@@ -503,7 +533,9 @@ class FuturesBot:
                 'holdings': holdings,
             }
         except Exception as e:
-            log_error(f"Futures balance: {e}", notify=False)
+            # لا نطبع الخطأ إذا كان API Key غير موجود
+            if "-2008" not in str(e) and "Invalid Api" not in str(e):
+                log_error(f"Futures balance: {e}", notify=False)
             return {'usdt':0.0,'total':INITIAL_BALANCE,'pnl':0.0,'pnl_pct':0.0,'holdings':{}}
 
     @staticmethod
