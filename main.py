@@ -382,17 +382,23 @@ class SpotBot:
                 action_type = "buy"
                 msg = f"✅ شراء {amt} {coin} @ {price:,.4f} | {total_val}$"
                 if settings.get("telegram_on_trade"):
+                    from datetime import datetime as _dt
+                    _now = _dt.now().strftime("%H:%M:%S")
                     asyncio.create_task(send_telegram(
-                        f"🟢 <b>شراء — {coin}</b>\n"
-                        f"الكمية: <code>{amt}</code>\n"
-                        f"السعر: <code>{price:,.4f}</code>\n"
-                        f"الإجمالي: <code>{total_val}$</code>"
+                        f"🟢 <b>شراء — {coin}/USDT</b>\n"
+                        f"💰 سعر الدخول: <code>{price:,.4f}$</code>\n"
+                        f"📦 الكمية: <code>{amt}</code>\n"
+                        f"💵 الإجمالي: <code>{total_val}$</code>\n"
+                        f"🕐 الوقت: <code>{_now}</code>"
                     ))
 
             # ── بيع ───────────────────────────────
             elif side in ("sell", "long_close"):
                 bal   = self.ex.fetch_balance()
                 c_bal = float(bal['total'].get(coin, 0.0))
+                # إذا Binance أعاد صفر (Testnet lag) — استخدم الكمية الداخلية
+                if c_bal < 0.000001:
+                    c_bal = self.buy_amounts.get(coin, 0.0)
                 if c_bal < 0.000001:
                     raise Exception(f"لا يوجد رصيد من {coin}")
                 sell_pct = settings["spot_sell_ratio"]
@@ -410,12 +416,18 @@ class SpotBot:
                 sign        = "+" if trade_pnl >= 0 else ""
                 msg = f"✅ بيع [{reason_ar}] {amt} {coin} @ {price:,.4f} | PnL: {sign}{trade_pnl}$ ({pnl_pct:+.2f}%)"
                 if settings.get("telegram_on_trade"):
+                    from datetime import datetime as _dt
+                    _now = _dt.now().strftime("%H:%M:%S")
                     em = "🟢" if trade_pnl >= 0 else "🔴"
                     asyncio.create_task(send_telegram(
-                        f"{em} <b>بيع — {coin}</b>\n"
-                        f"السبب: {reason_ar}\n"
-                        f"السعر: <code>{price:,.4f}</code>\n"
-                        f"PnL: <code>{sign}{trade_pnl}$ ({pnl_pct:+.2f}%)</code>"
+                        f"{em} <b>بيع — {coin}/USDT</b>\n"
+                        f"📌 السبب: {reason_ar}\n"
+                        f"🔵 سعر الدخول: <code>{buy_p:,.4f}$</code>\n"
+                        f"🔴 سعر البيع: <code>{price:,.4f}$</code>\n"
+                        f"📦 الكمية: <code>{amt}</code>\n"
+                        f"💵 الإجمالي: <code>{total_val}$</code>\n"
+                        f"📊 صافي الربح/الخسارة: <code>{sign}{trade_pnl}$ ({pnl_pct:+.2f}%)</code>\n"
+                        f"🕐 الوقت: <code>{_now}</code>"
                     ))
             else:
                 raise Exception(f"أمر غير معروف: {side}")
@@ -1098,6 +1110,7 @@ td{padding:10px 14px;font-size:11px;text-align:right;vertical-align:middle}
   <div class="sgrid">
     <div class="scard"><div class="si">📊</div><div class="sl">إجمالي الصفقات</div><div class="sv cg" id="stTotal">0</div><div class="ss">صفقة منذ البداية</div></div>
     <div class="scard"><div class="si">🎯</div><div class="sl">Win Rate</div><div class="sv cgr" id="stWR">0%</div><div class="ss" id="stWL">0 ✅ 0 ❌</div></div>
+    <div class="scard"><div class="si">💰</div><div class="sl">صافي الأرباح</div><div class="sv" id="stTotalPnl">0.00$</div><div class="ss">إجمالي الربح/الخسارة</div></div>
     <div class="scard"><div class="si">🏆</div><div class="sl">أفضل صفقة</div><div class="sv cgr" id="stBest">--</div><div class="ss">ربح محقق</div></div>
     <div class="scard"><div class="si">📉</div><div class="sl">Max Drawdown</div><div class="sv cr" id="stDD">--</div><div class="ss">أقصى تراجع</div></div>
   </div>
@@ -1398,6 +1411,19 @@ function render(d){
   best.className='sv '+pc(st.best_trade||0);
   document.getElementById('stDD').textContent='-'+fmt(st.max_drawdown||0)+'$';
   document.getElementById('trCount').textContent=(st.total||0)+' صفقة';
+  // صافي الأرباح الكلي
+  const totalPnlEl=document.getElementById('stTotalPnl');
+  if(totalPnlEl){
+    const tp=st.total_pnl||0;
+    totalPnlEl.textContent=(tp>=0?'+':'')+fmt(tp,2)+'$';
+    totalPnlEl.className='sv '+(tp>=0?'cg':'cr');
+  }
+  // Win Rate لون ديناميكي
+  const wrEl=document.getElementById('stWR');
+  if(wrEl){
+    const wr=st.win_rate||0;
+    wrEl.style.color=wr>=50?'var(--green)':wr>=30?'var(--gold)':'var(--red)';
+  }
 
   // Portfolio
   renderPortfolio(sp.holdings||{});
@@ -1415,16 +1441,21 @@ function renderPortfolio(h){
     document.getElementById('portBody').innerHTML='<tr><td colspan="7"><div class="empty"><span class="empty-i">💼</span>لا توجد عملات محتفظ بها</div></td></tr>';
     return;
   }
-  document.getElementById('portBody').innerHTML=keys.map(c=>{
+  // ترتيب: العملات ذات القيمة الأعلى أولاً
+  const sorted=keys.sort((a,b)=>(h[b].value||0)-(h[a].value||0));
+  document.getElementById('portBody').innerHTML=sorted.map(c=>{
     const v=h[c];
-    return `<tr>
-      <td><span style="color:var(--gold);font-weight:700">${c}</span></td>
+    const hasPos = v.amount > 0;
+    const rowStyle = hasPos ? 'background:rgba(0,255,150,0.04);' : 'opacity:0.5;';
+    const pnlColor = v.pnl_usd >= 0 ? 'var(--green)' : 'var(--red)';
+    return `<tr style="${rowStyle}">
+      <td><span style="color:var(--gold);font-weight:700">${c}</span>${hasPos?'<span style="color:var(--green);font-size:10px;margin-right:4px">●</span>':''}</td>
       <td>${v.amount}</td>
       <td>${fmt(v.buy_price,4)}</td>
       <td style="color:var(--blue)">${fmt(v.current_price,4)}</td>
       <td style="color:var(--gold)">${fmt(v.value,2)}$</td>
-      <td class="${pc(v.pnl_usd)}">${sg(v.pnl_usd)}${fmt(v.pnl_usd,2)}$</td>
-      <td class="${pc(v.pnl_pct)}">${sg(v.pnl_pct)}${v.pnl_pct}%</td>
+      <td style="color:${pnlColor};font-weight:600">${sg(v.pnl_usd)}${fmt(v.pnl_usd,2)}$</td>
+      <td style="color:${pnlColor};font-weight:600">${sg(v.pnl_pct)}${v.pnl_pct}%</td>
     </tr>`;
   }).join('');
 }
