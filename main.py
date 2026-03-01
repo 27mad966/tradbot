@@ -1666,12 +1666,18 @@ async def webhook(s: Signal):
     if market == "futures":
         if not settings.get("futures_enabled"):
             return {"status":"futures_disabled","ok":False}
-        result = futures_bot.execute(s.pair, direction, reason)
-    else:
-        result = spot_bot.execute(s.pair, direction, reason)
 
-    await broadcast(await get_full_state())
-    return result
+    # رد فوري على TradingView لتجنب timeout
+    async def execute_in_background():
+        if market == "futures":
+            result = futures_bot.execute(s.pair, direction, reason)
+        else:
+            result = spot_bot.execute(s.pair, direction, reason)
+        await broadcast(await get_full_state())
+        print(f"✅ Executed: {result}")
+
+    asyncio.create_task(execute_in_background())
+    return {"status": "received", "ok": True}
 
 
 @app.post("/settings/update")
