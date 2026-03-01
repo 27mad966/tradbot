@@ -19,7 +19,7 @@
 import os, asyncio, ccxt, uvicorn, json
 from datetime import datetime, timedelta
 from collections import deque
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -1689,19 +1689,41 @@ async def ws_handler(ws: WebSocket):
 
 
 @app.post("/webhook")
-async def webhook(s: Signal):
-    # ── طباعة ما يصل من TradingView ───────
-    print(f"📨 Webhook received: pair={s.pair} | direction={s.direction} | market={s.market} | reason={s.reason}")
+async def webhook(request: Request):
+    # ── قراءة الرسالة (JSON أو نص بسيط) ───
+    raw = await request.body()
+    raw_str = raw.decode("utf-8").strip()
+    print(f"📨 Raw webhook: {raw_str[:200]}")
 
-    # ── تنظيف اسم الزوج تلقائياً ──────────
-    # يزيل أي لاحقة مثل .P أو BINANCE: أو :USDT
-    pair = s.pair.upper().strip()
-    pair = pair.replace("BINANCE:", "").replace("BYBIT:", "").replace("OKX:", "")
-    pair = pair.replace(".P", "").replace("-PERP", "").replace("_PERP", "")
-    if ":" in pair:
-        pair = pair.split(":")[1]
-    s = Signal(pair=pair, direction=s.direction, reason=s.reason, market=s.market)
-    print(f"✅ Cleaned pair: {s.pair}")
+    # ── تفكيك الرسالة ──────────────────────
+    pair = direction = reason = market = ""
+    try:
+        # محاولة JSON أولاً
+        data = json.loads(raw_str)
+        pair      = str(data.get("pair", "")).upper().strip()
+        direction = str(data.get("direction", "")).lower().strip()
+        reason    = str(data.get("reason", ""))
+        market    = str(data.get("market", "spot")).lower()
+    except Exception:
+        # نص بسيط: SOLUSDT|buy|spot|peak_exit
+        parts = [p.strip() for p in raw_str.replace(",","|").split("|")]
+        if len(parts) >= 2:
+            pair      = parts[0].upper()
+            direction = parts[1].lower()
+            market    = parts[2].lower() if len(parts) > 2 else "spot"
+            reason    = parts[3] if len(parts) > 3 else ""
+        else:
+            return JSONResponse({"status":"error","msg":"رسالة غير مفهومة","raw":raw_str}, status_code=422)
+
+    # ── تنظيف اسم الزوج ───────────────────
+    pair = pair.replace("BINANCE:","").replace("BYBIT:","").replace("OKX:","")
+    pair = pair.replace(".P","").replace("-PERP","").replace("_PERP","")
+    if ":" in pair: pair = pair.split(":")[1]
+    if not pair or not direction:
+        return JSONResponse({"status":"error","msg":"pair أو direction مفقود"}, status_code=422)
+
+    s = Signal(pair=pair, direction=direction, reason=reason, market=market)
+    print(f"✅ Parsed: pair={s.pair} | direction={s.direction} | market={s.market} | reason={s.reason}")
 
     # ── فحوصات الأمان ─────────────────────
     if settings.get("emergency_stop"):
