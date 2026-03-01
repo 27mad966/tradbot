@@ -382,8 +382,8 @@ class SpotBot:
                 action_type = "buy"
                 msg = f"✅ شراء {amt} {coin} @ {price:,.4f} | {total_val}$"
                 if settings.get("telegram_on_trade"):
-                    from datetime import datetime as _dt
-                    _now = _dt.now().strftime("%H:%M:%S")
+                    from datetime import datetime as _dt, timezone, timedelta
+                    _now = _dt.now(timezone(timedelta(hours=3))).strftime("%H:%M:%S")
                     asyncio.create_task(send_telegram(
                         f"🟢 <b>شراء — {coin}/USDT</b>\n"
                         f"💰 سعر الدخول: <code>{price:,.4f}$</code>\n"
@@ -416,8 +416,8 @@ class SpotBot:
                 sign        = "+" if trade_pnl >= 0 else ""
                 msg = f"✅ بيع [{reason_ar}] {amt} {coin} @ {price:,.4f} | PnL: {sign}{trade_pnl}$ ({pnl_pct:+.2f}%)"
                 if settings.get("telegram_on_trade"):
-                    from datetime import datetime as _dt
-                    _now = _dt.now().strftime("%H:%M:%S")
+                    from datetime import datetime as _dt, timezone, timedelta
+                    _now = _dt.now(timezone(timedelta(hours=3))).strftime("%H:%M:%S")
                     em = "🟢" if trade_pnl >= 0 else "🔴"
                     asyncio.create_task(send_telegram(
                         f"{em} <b>بيع — {coin}/USDT</b>\n"
