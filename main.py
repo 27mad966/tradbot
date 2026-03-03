@@ -1,22 +1,22 @@
 """
-╔══════════════════════════════════════════════════════════════╗
-║           SOVEREIGN TRADING SYSTEM — V7.0                   ║
-║           Spot + Futures | Risk Management | Full Dashboard  ║
-║           Built with FastAPI + CCXT + WebSocket             ║
-╚══════════════════════════════════════════════════════════════╝
+╔══════════════════════════════════════════════════════════════════╗
+║           SOVEREIGN TRADING SYSTEM — V8.0                       ║
+║           Spot + Futures | Advanced Analytics | Full Dashboard  ║
+║           Built with FastAPI + CCXT + WebSocket                 ║
+╚══════════════════════════════════════════════════════════════════╝
 
-متغيرات البيئة المطلوبة في Render:
-  BINANCE_API_KEY              ← مفتاح Spot
-  BINANCE_SECRET_KEY           ← سر Spot
-  BINANCE_FUTURES_API_KEY      ← مفتاح Futures (اختياري)
-  BINANCE_FUTURES_SECRET_KEY   ← سر Futures (اختياري)
-  DASHBOARD_PASSWORD           ← كلمة سر الداشبورد (افتراضي: sovereign2025)
-  INITIAL_BALANCE              ← رأس المال الابتدائي (افتراضي: 10000)
-  TELEGRAM_TOKEN               ← توكن بوت Telegram (اختياري)
-  TELEGRAM_CHAT_ID             ← معرف المحادثة (اختياري)
+Environment Variables (Render):
+  BINANCE_API_KEY              ← Spot API Key
+  BINANCE_SECRET_KEY           ← Spot Secret
+  BINANCE_FUTURES_API_KEY      ← Futures API Key (optional)
+  BINANCE_FUTURES_SECRET_KEY   ← Futures Secret (optional)
+  DASHBOARD_PASSWORD           ← Dashboard password (default: sovereign2025)
+  INITIAL_BALANCE              ← Starting capital (default: 10000)
+  TELEGRAM_TOKEN               ← Telegram bot token (optional)
+  TELEGRAM_CHAT_ID             ← Telegram chat ID (optional)
 """
 
-import os, asyncio, ccxt, uvicorn, json
+import os, asyncio, ccxt, uvicorn, json, math
 from datetime import datetime, timedelta
 from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
@@ -27,70 +27,75 @@ from typing import Optional
 import httpx
 
 # ══════════════════════════════════════════
-# تهيئة التطبيق
+# App Init
 # ══════════════════════════════════════════
-app = FastAPI(title="SOVEREIGN V7.0", version="7.0.0")
+app = FastAPI(title="SOVEREIGN V8.0", version="8.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # ══════════════════════════════════════════
-# الإعدادات والثوابت
+# Config
 # ══════════════════════════════════════════
-DASHBOARD_PASSWORD    = os.getenv("DASHBOARD_PASSWORD", "sovereign2025")
-INITIAL_BALANCE       = float(os.getenv("INITIAL_BALANCE", "10000"))
-TELEGRAM_TOKEN        = os.getenv("TELEGRAM_TOKEN", "")
-TELEGRAM_CHAT_ID      = os.getenv("TELEGRAM_CHAT_ID", "")
+DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "sovereign2025")
+INITIAL_BALANCE    = float(os.getenv("INITIAL_BALANCE", "10000"))
+TELEGRAM_TOKEN     = os.getenv("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "")
 
-# الإعدادات الافتراضية — كل ميزة قابلة للتفعيل/الإلغاء
 settings = {
-    # ─── حالة البوت ───────────────────────
-    "active":           True,
-    "emergency_stop":   False,
-
-    # ─── Spot ─────────────────────────────
-    "spot_buy_mode":    "fixed",    # fixed | percent
-    "spot_buy_value":   100.0,
-    "spot_sell_ratio":  1.0,
-
-    # ─── Futures ──────────────────────────
-    "futures_enabled":  True,
-    "futures_mode":     "fixed",
-    "futures_value":    100.0,
-    "leverage":         10,
-
-    # ─── Risk Management ──────────────────
+    "active":                   True,
+    "emergency_stop":           False,
+    # Spot
+    "spot_buy_mode":            "fixed",
+    "spot_buy_value":           100.0,
+    "spot_sell_ratio":          1.0,
+    "spot_max_positions":       5,
+    # Futures
+    "futures_enabled":          True,
+    "futures_mode":             "fixed",
+    "futures_value":            100.0,
+    "leverage":                 10,
+    "futures_max_positions":    3,
+    # Risk
     "risk_enabled":             True,
     "trailing_stop_pct":        1.2,
     "fixed_stop_loss_pct":      3.0,
-
-    # ─── حد الخسارة اليومي ───────────────
+    # Position Sizing
+    "position_sizing_enabled":  False,
+    "position_sizing_pct":      5.0,
+    "max_concentration_pct":    20.0,
+    # Daily Loss
     "daily_loss_enabled":       True,
     "daily_loss_limit_pct":     5.0,
     "daily_loss_current":       0.0,
     "daily_loss_date":          "",
-
-    # ─── Session Manager ──────────────────
-    "session_enabled":  False,
-    "session_start":    "08:00",
-    "session_end":      "22:00",
-
-    # ─── التقويم الاقتصادي ────────────────
+    # Session
+    "session_enabled":          False,
+    "session_start":            "08:00",
+    "session_end":              "22:00",
+    # Calendar
     "calendar_enabled":         False,
     "calendar_pause_before":    30,
     "calendar_resume_after":    60,
     "calendar_paused":          False,
     "calendar_next_event":      "",
     "calendar_next_event_time": "",
-
-    # ─── Telegram ─────────────────────────
+    # Telegram
     "telegram_enabled":         bool(TELEGRAM_TOKEN and TELEGRAM_CHAT_ID),
     "telegram_on_trade":        True,
     "telegram_on_error":        True,
     "telegram_daily_report":    True,
     "telegram_report_time":     "00:00",
+    # Notifications
+    "sound_enabled":            True,
+    "toast_enabled":            True,
+    # Report period
+    "report_hours":             24,
 }
 
 active_connections: list[WebSocket] = []
-error_logs: deque = deque(maxlen=100)
+error_logs:   deque = deque(maxlen=200)
+login_logs:   deque = deque(maxlen=100)
+equity_curve: deque = deque(maxlen=2000)   # {ts, value}
+toast_queue:  deque = deque(maxlen=20)
 
 
 # ══════════════════════════════════════════
@@ -112,41 +117,37 @@ async def send_telegram(msg: str, force: bool = False):
 
 
 def log_error(msg: str, notify: bool = True):
-    entry = {
-        "time": datetime.now().strftime("%H:%M:%S"),
-        "date": datetime.now().strftime("%d/%m"),
-        "msg":  msg
-    }
+    entry = {"time": datetime.now().strftime("%H:%M:%S"), "date": datetime.now().strftime("%d/%m"), "msg": msg}
     error_logs.appendleft(entry)
     print(f"❌ {msg}")
     if notify and settings.get("telegram_on_error"):
-        asyncio.create_task(send_telegram(f"⚠️ <b>تحذير</b>\n{msg[:200]}"))
+        asyncio.create_task(send_telegram(f"⚠️ <b>Alert</b>\n{msg[:200]}"))
+
+
+def add_toast(msg: str, kind: str = "info"):
+    toast_queue.appendleft({"msg": msg, "kind": kind, "ts": int(datetime.now().timestamp() * 1000)})
 
 
 # ══════════════════════════════════════════
-# فحوصات الأمان
+# Safety Checks
 # ══════════════════════════════════════════
 def is_session_active() -> tuple[bool, str]:
     if not settings.get("session_enabled"):
         return True, ""
     now = datetime.now().strftime("%H:%M")
-    start, end = settings["session_start"], settings["session_end"]
-    if start <= now <= end:
-        return True, ""
-    return False, f"خارج وقت الجلسة ({start} – {end})"
+    s, e = settings["session_start"], settings["session_end"]
+    return (True, "") if s <= now <= e else (False, f"Outside session ({s}–{e})")
 
 
 def is_calendar_paused() -> tuple[bool, str]:
     if not settings.get("calendar_enabled"):
         return False, ""
     if settings.get("calendar_paused"):
-        ev = settings.get("calendar_next_event", "حدث اقتصادي")
-        return True, ev
+        return True, settings.get("calendar_next_event", "Economic Event")
     return False, ""
 
 
 def update_daily_loss(pnl: float) -> bool:
-    """يحدّث الخسارة اليومية ويوقف البوت إذا تجاوز الحد. يُعيد True إذا وصل للحد."""
     if not settings.get("daily_loss_enabled"):
         return False
     today = datetime.now().strftime("%Y-%m-%d")
@@ -158,73 +159,157 @@ def update_daily_loss(pnl: float) -> bool:
         limit = INITIAL_BALANCE * (settings["daily_loss_limit_pct"] / 100) * -1
         if settings["daily_loss_current"] <= limit:
             settings["active"] = False
+            add_toast("🚨 Daily loss limit reached — Bot stopped!", "error")
             asyncio.create_task(send_telegram(
-                f"🚨 <b>إيقاف تلقائي</b>\n"
-                f"تجاوز حد الخسارة اليومي!\n"
-                f"الخسارة: {settings['daily_loss_current']:.2f}$\n"
-                f"الحد المسموح: {abs(limit):.2f}$"
+                f"🚨 <b>Auto Stop</b>\nDaily loss limit hit!\n"
+                f"Loss: {settings['daily_loss_current']:.2f}$\n"
+                f"Limit: {abs(limit):.2f}$"
             ))
             return True
     return False
 
 
 # ══════════════════════════════════════════
-# جلب التقويم الاقتصادي
+# Economic Calendar
 # ══════════════════════════════════════════
 async def fetch_economic_calendar():
     if not settings.get("calendar_enabled"):
         return
     try:
         async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get("https://nfs.faireconomy.media/ff_calendar_thisweek.json")
+            resp   = await client.get("https://nfs.faireconomy.media/ff_calendar_thisweek.json")
             events = resp.json()
-        now = datetime.now()
+        now      = datetime.now()
         upcoming = []
         for ev in events:
             if ev.get("impact") not in ["High"]:
                 continue
             try:
-                dt_str = ev["date"].replace("Z", "+00:00")
+                dt_str  = ev["date"].replace("Z", "+00:00")
                 ev_time = datetime.fromisoformat(dt_str).replace(tzinfo=None)
                 if ev_time > now:
-                    upcoming.append({
-                        "time":    ev_time,
-                        "title":   ev.get("title", ""),
-                        "country": ev.get("country", "")
-                    })
+                    upcoming.append({"time": ev_time, "title": ev.get("title",""), "country": ev.get("country","")})
             except:
                 continue
-
         if not upcoming:
-            settings["calendar_next_event"]      = ""
+            settings["calendar_next_event"] = ""
             settings["calendar_next_event_time"] = ""
             if settings.get("calendar_paused"):
                 settings["calendar_paused"] = False
             return
-
         upcoming.sort(key=lambda x: x["time"])
         nxt = upcoming[0]
         settings["calendar_next_event"]      = f"🔴 {nxt['country']} — {nxt['title']}"
         settings["calendar_next_event_time"] = nxt["time"].strftime("%d/%m %H:%M")
-
         pause_start  = nxt["time"] - timedelta(minutes=settings["calendar_pause_before"])
         resume_after = nxt["time"] + timedelta(minutes=settings["calendar_resume_after"])
-
         if pause_start <= now <= resume_after:
             if not settings["calendar_paused"]:
                 settings["calendar_paused"] = True
-                await send_telegram(
-                    f"⏸ <b>إيقاف مؤقت — حدث اقتصادي</b>\n"
-                    f"{nxt['country']}: {nxt['title']}\n"
-                    f"الوقت: {nxt['time'].strftime('%H:%M')}"
-                )
+                add_toast(f"⏸ Paused — {nxt['title']}", "warning")
+                await send_telegram(f"⏸ <b>Paused — Economic Event</b>\n{nxt['country']}: {nxt['title']}")
         else:
             if settings["calendar_paused"]:
                 settings["calendar_paused"] = False
-                await send_telegram("▶️ <b>استئناف التداول</b>\nانتهى تأثير الحدث الاقتصادي ✅")
-
+                add_toast("▶️ Trading resumed", "success")
+                await send_telegram("▶️ <b>Trading Resumed</b> ✅")
     except Exception as e:
-        log_error(f"Calendar fetch: {e}", notify=False)
+        log_error(f"Calendar: {e}", notify=False)
+
+
+# ══════════════════════════════════════════
+# Analytics Engine
+# ══════════════════════════════════════════
+def calc_advanced_stats(trades: list) -> dict:
+    closed = [t for t in trades if t.get("act") in ("sell","long_close","short_close") and t.get("success")]
+    if not closed:
+        return {
+            "total":0,"wins":0,"losses":0,"win_rate":0,
+            "best_trade":0,"worst_trade":0,"total_pnl":0,
+            "max_drawdown":0,"profit_factor":0,
+            "sharpe":0,"avg_win":0,"avg_loss":0,
+            "avg_duration_min":0,"consecutive_wins":0,"consecutive_losses":0,
+            "expectancy":0,
+        }
+    pnls   = [t.get("pnl",0) for t in closed]
+    wins   = [p for p in pnls if p > 0]
+    losses = [p for p in pnls if p < 0]
+
+    # Drawdown
+    peak = running = max_dd = 0
+    for p in pnls:
+        running += p
+        if running > peak: peak = running
+        dd = peak - running
+        if dd > max_dd: max_dd = dd
+
+    # Profit Factor
+    gross_profit = sum(wins) if wins else 0
+    gross_loss   = abs(sum(losses)) if losses else 0
+    pf = round(gross_profit / gross_loss, 2) if gross_loss > 0 else (999 if gross_profit > 0 else 0)
+
+    # Sharpe (simplified, daily returns)
+    if len(pnls) > 1:
+        avg  = sum(pnls) / len(pnls)
+        std  = math.sqrt(sum((p - avg)**2 for p in pnls) / len(pnls))
+        sharpe = round((avg / std) * math.sqrt(252), 2) if std > 0 else 0
+    else:
+        sharpe = 0
+
+    # Consecutive
+    max_cw = max_cl = cur_cw = cur_cl = 0
+    for p in pnls:
+        if p > 0: cur_cw += 1; cur_cl = 0
+        else:     cur_cl += 1; cur_cw = 0
+        max_cw = max(max_cw, cur_cw)
+        max_cl = max(max_cl, cur_cl)
+
+    avg_win  = round(sum(wins)   / len(wins), 2)   if wins   else 0
+    avg_loss = round(sum(losses) / len(losses), 2) if losses else 0
+    wr       = len(wins) / len(closed)
+    expectancy = round(wr * avg_win + (1 - wr) * avg_loss, 2)
+
+    return {
+        "total":               len(closed),
+        "wins":                len(wins),
+        "losses":              len(losses),
+        "win_rate":            round(wr * 100, 1),
+        "best_trade":          round(max(pnls), 2),
+        "worst_trade":         round(min(pnls), 2),
+        "total_pnl":           round(sum(pnls), 2),
+        "max_drawdown":        round(max_dd, 2),
+        "profit_factor":       pf,
+        "sharpe":              sharpe,
+        "avg_win":             avg_win,
+        "avg_loss":            avg_loss,
+        "consecutive_wins":    max_cw,
+        "consecutive_losses":  max_cl,
+        "expectancy":          expectancy,
+        "gross_profit":        round(gross_profit, 2),
+        "gross_loss":          round(gross_loss, 2),
+    }
+
+
+def get_period_stats(trades: list, hours: int) -> dict:
+    cutoff = datetime.now() - timedelta(hours=hours)
+    period = []
+    for t in trades:
+        try:
+            dt = datetime.strptime(f"{t.get('date','01/01/2024')} {t.get('time','00:00:00')}", "%d/%m/%Y %H:%M:%S")
+            if dt >= cutoff:
+                period.append(t)
+        except:
+            pass
+    closed = [t for t in period if t.get("act") in ("sell","long_close","short_close") and t.get("success")]
+    pnls   = [t.get("pnl",0) for t in closed]
+    wins   = [p for p in pnls if p > 0]
+    return {
+        "trades":   len(closed),
+        "wins":     len(wins),
+        "losses":   len(closed) - len(wins),
+        "pnl":      round(sum(pnls), 2),
+        "win_rate": round(len(wins)/len(closed)*100, 1) if closed else 0,
+    }
 
 
 # ══════════════════════════════════════════
@@ -233,260 +318,212 @@ async def fetch_economic_calendar():
 class SpotBot:
     def __init__(self):
         self.ex = ccxt.binance({
-            'apiKey':  os.getenv("BINANCE_API_KEY", "").strip(),
-            'secret':  os.getenv("BINANCE_SECRET_KEY", "").strip(),
-            'enableRateLimit': True,
-            'options': {
-                'adjustForTimeDifference': True,
-                'recvWindow': 15000,
-                'defaultType': 'spot'
-            }
+            "apiKey":  os.getenv("BINANCE_API_KEY","").strip(),
+            "secret":  os.getenv("BINANCE_SECRET_KEY","").strip(),
+            "enableRateLimit": True,
+            "options": {"adjustForTimeDifference": True, "recvWindow": 15000, "defaultType": "spot"}
         })
         self.ex.set_sandbox_mode(True)
-        self.trades: deque      = deque(maxlen=500)
-        self.buy_prices: dict   = {}
+        self.trades:      deque = deque(maxlen=1000)
+        self.buy_prices:  dict  = {}
         self.buy_amounts: dict  = {}
+        self.buy_times:   dict  = {}
 
     async def get_balance(self) -> dict:
         try:
-            bal = self.ex.fetch_balance()
-            usdt = float(bal['total'].get('USDT', 0.0))
-            portfolio_value = usdt
+            bal   = self.ex.fetch_balance()
+            usdt  = float(bal["total"].get("USDT", 0.0))
+            pv    = usdt
             holdings = {}
-
-            # ① العملات الفعلية من Binance
-            for coin, raw_amt in bal['total'].items():
-                amt = float(raw_amt or 0)
-                if coin in ('USDT','BUSD','USDC','TUSD','DAI') or amt < 0.000001:
+            for coin, raw in bal["total"].items():
+                amt = float(raw or 0)
+                if coin in ("USDT","BUSD","USDC","TUSD","DAI") or amt < 0.000001:
                     continue
                 try:
-                    pair   = f"{coin}/USDT"
-                    ticker = self.ex.fetch_ticker(pair)
-                    price  = float(ticker['last'])
+                    ticker = self.ex.fetch_ticker(f"{coin}/USDT")
+                    price  = float(ticker["last"])
                     value  = amt * price
-                    portfolio_value += value
-                    buy_p   = self.buy_prices.get(coin, price)
-                    pnl_usd = (price - buy_p) * amt
-                    pnl_pct = ((price - buy_p) / buy_p * 100) if buy_p > 0 else 0.0
+                    pv    += value
+                    buy_p  = self.buy_prices.get(coin, price)
+                    pnl_u  = (price - buy_p) * amt
+                    pnl_p  = ((price - buy_p) / buy_p * 100) if buy_p > 0 else 0
                     holdings[coin] = {
-                        'amount':        round(amt, 6),
-                        'buy_price':     round(buy_p, 6),
-                        'current_price': round(price, 6),
-                        'value':         round(value, 2),
-                        'pnl_usd':       round(pnl_usd, 2),
-                        'pnl_pct':       round(pnl_pct, 2),
+                        "amount":        round(amt, 6),
+                        "buy_price":     round(buy_p, 6),
+                        "current_price": round(price, 6),
+                        "value":         round(value, 2),
+                        "pnl_usd":       round(pnl_u, 2),
+                        "pnl_pct":       round(pnl_p, 2),
                     }
-                except Exception:
+                except:
                     pass
-
-            # ② العملات التي اشترينا لكن لا تظهر في Binance بعد (Testnet lag)
             for coin, buy_p in self.buy_prices.items():
                 if coin in holdings:
-                    continue  # موجودة فعلاً من ①
+                    continue
                 try:
-                    pair   = f"{coin}/USDT"
-                    ticker = self.ex.fetch_ticker(pair)
-                    price  = float(ticker['last'])
+                    ticker = self.ex.fetch_ticker(f"{coin}/USDT")
+                    price  = float(ticker["last"])
                     amt    = self.buy_amounts.get(coin, 0.0)
                     if amt < 0.000001:
                         continue
-                    value   = amt * price
-                    portfolio_value += value
-                    pnl_usd = (price - buy_p) * amt
-                    pnl_pct = ((price - buy_p) / buy_p * 100) if buy_p > 0 else 0.0
+                    value  = amt * price
+                    pv    += value
+                    pnl_u  = (price - buy_p) * amt
+                    pnl_p  = ((price - buy_p) / buy_p * 100) if buy_p > 0 else 0
                     holdings[coin] = {
-                        'amount':        round(amt, 6),
-                        'buy_price':     round(buy_p, 6),
-                        'current_price': round(price, 6),
-                        'value':         round(value, 2),
-                        'pnl_usd':       round(pnl_usd, 2),
-                        'pnl_pct':       round(pnl_pct, 2),
+                        "amount":        round(amt, 6),
+                        "buy_price":     round(buy_p, 6),
+                        "current_price": round(price, 6),
+                        "value":         round(value, 2),
+                        "pnl_usd":       round(pnl_u, 2),
+                        "pnl_pct":       round(pnl_p, 2),
                     }
-                except Exception:
+                except:
                     pass
-
-            total_pnl = portfolio_value - INITIAL_BALANCE
-            pnl_pct   = round((total_pnl / INITIAL_BALANCE) * 100, 2) if INITIAL_BALANCE else 0
+            total_pnl = pv - INITIAL_BALANCE
             return {
-                'usdt':     round(usdt, 2),
-                'total':    round(portfolio_value, 2),
-                'pnl':      round(total_pnl, 2),
-                'pnl_pct':  pnl_pct,
-                'holdings': holdings,
+                "usdt":     round(usdt, 2),
+                "total":    round(pv, 2),
+                "pnl":      round(total_pnl, 2),
+                "pnl_pct":  round((total_pnl / INITIAL_BALANCE) * 100, 2) if INITIAL_BALANCE else 0,
+                "holdings": holdings,
             }
         except Exception as e:
             log_error(f"Spot balance: {e}", notify=False)
-            return {'usdt': 0.0, 'total': INITIAL_BALANCE, 'pnl': 0.0, 'pnl_pct': 0.0, 'holdings': {}}
+            return {"usdt":0,"total":INITIAL_BALANCE,"pnl":0,"pnl_pct":0,"holdings":{}}
 
     @staticmethod
-    def fix_pair(pair: str) -> str:
-        pair = pair.upper().strip().replace("USDTUSDT","USDT").replace(".P","")
-        if "/" in pair:   return pair
-        if pair.endswith("USDT"): return f"{pair[:-4]}/USDT"
-        return f"{pair}/USDT"
+    def fix_pair(p: str) -> str:
+        p = p.upper().strip().replace("USDTUSDT","USDT").replace(".P","")
+        if "/" in p: return p
+        if p.endswith("USDT"): return f"{p[:-4]}/USDT"
+        return f"{p}/USDT"
 
     def _place_risk_orders(self, pair: str, amt: float, buy_price: float):
         if not settings.get("risk_enabled"):
             return
-        # Fixed Stop Loss
         try:
-            sl_price = round(buy_price * (1 - settings["fixed_stop_loss_pct"] / 100), 6)
-            self.ex.create_order(pair, 'stop_loss_limit', 'sell', amt,
-                                 sl_price, {'stopPrice': sl_price})
-            print(f"🛡️ Fixed SL @ {sl_price}")
+            sl = round(buy_price * (1 - settings["fixed_stop_loss_pct"] / 100), 6)
+            self.ex.create_order(pair, "stop_loss_limit", "sell", amt, sl, {"stopPrice": sl})
         except Exception as e:
-            log_error(f"Fixed SL failed ({pair}): {e}", notify=False)
-        # Trailing Stop — متوافق مع Testnet و Live
+            log_error(f"SL failed ({pair}): {e}", notify=False)
         try:
-            self.ex.create_order(pair, 'trailing_stop_market', 'sell', amt, None, {
-                'callbackRate': settings["trailing_stop_pct"],
-                'stopLoss': {'type': 'TRAILING_STOP_MARKET', 'callbackRate': settings["trailing_stop_pct"]}
+            self.ex.create_order(pair, "trailing_stop_market", "sell", amt, None, {
+                "callbackRate": settings["trailing_stop_pct"]
             })
-            print(f"🛡️ Trailing SL {settings['trailing_stop_pct']}%")
-        except Exception as e:
-            # Testnet لا يدعم Trailing Stop — نتجاهل الخطأ بهدوء
-            print(f"⚠️ Trailing SL not supported in Testnet — skipping")
+        except:
+            pass
 
     def execute(self, pair: str, side: str, reason: str = "") -> dict:
-        side = side.lower().strip()
-        pair = self.fix_pair(pair)
-        coin = pair.split('/')[0]
-        price      = 0.0
-        trade_pnl  = 0.0
-        amt        = 0.0
-        total_val  = 0.0
+        side  = side.lower().strip()
+        pair  = self.fix_pair(pair)
+        coin  = pair.split("/")[0]
+        price = amt = total_val = trade_pnl = 0.0
         action_type = side
-
         try:
             self.ex.load_markets()
             ticker = self.ex.fetch_ticker(pair)
-            price  = float(ticker['last'])
-
-            # ── شراء ──────────────────────────────
-            if side in ("buy", "long_open"):
+            price  = float(ticker["last"])
+            if side in ("buy","long_open"):
+                # Position sizing
                 bal  = self.ex.fetch_balance()
-                usdt = float(bal['total'].get('USDT', 0.0))
-                if settings["spot_buy_mode"] == "fixed":
+                usdt = float(bal["total"].get("USDT", 0.0))
+                if settings.get("position_sizing_enabled"):
+                    val = usdt * (settings["position_sizing_pct"] / 100)
+                elif settings["spot_buy_mode"] == "fixed":
                     val = settings["spot_buy_value"]
                 else:
                     val = usdt * (settings["spot_buy_value"] / 100)
                 val = max(val, 11.0)
                 if val > usdt:
-                    raise Exception(f"رصيد غير كافٍ ({usdt:.2f}$ < {val:.2f}$)")
+                    raise Exception(f"Insufficient balance ({usdt:.2f}$ < {val:.2f}$)")
+                # Max concentration check
+                if settings.get("position_sizing_enabled"):
+                    total_portfolio = usdt + sum(
+                        self.buy_amounts.get(c, 0) * price for c in self.buy_prices
+                    )
+                    concentration = (val / total_portfolio * 100) if total_portfolio > 0 else 0
+                    if concentration > settings.get("max_concentration_pct", 20):
+                        raise Exception(f"Concentration limit: {concentration:.1f}% > {settings['max_concentration_pct']}%")
                 amt       = float(self.ex.amount_to_precision(pair, val / price))
                 total_val = round(amt * price, 2)
                 self.ex.create_market_buy_order(pair, amt)
                 self.buy_prices[coin]  = price
                 self.buy_amounts[coin] = amt
+                self.buy_times[coin]   = datetime.now()
                 self._place_risk_orders(pair, amt, price)
                 action_type = "buy"
-                msg = f"✅ شراء {amt} {coin} @ {price:,.4f} | {total_val}$"
+                add_toast(f"🟢 BUY {coin} @ {price:,.4f}", "success")
                 if settings.get("telegram_on_trade"):
-                    from datetime import datetime as _dt, timezone, timedelta
-                    _now = _dt.now(timezone(timedelta(hours=3))).strftime("%H:%M:%S")
                     asyncio.create_task(send_telegram(
-                        f"🟢 <b>شراء — {coin}/USDT</b>\n"
-                        f"💰 سعر الدخول: <code>{price:,.4f}$</code>\n"
-                        f"📦 الكمية: <code>{amt}</code>\n"
-                        f"💵 الإجمالي: <code>{total_val}$</code>\n"
-                        f"🕐 الوقت: <code>{_now}</code>"
+                        f"🟢 <b>BUY — {coin}/USDT</b>\n"
+                        f"💰 Entry: <code>{price:,.4f}$</code>\n"
+                        f"📦 Amount: <code>{amt}</code>\n"
+                        f"💵 Total: <code>{total_val}$</code>"
                     ))
-
-            # ── بيع ───────────────────────────────
-            elif side in ("sell", "long_close"):
+            elif side in ("sell","long_close"):
                 bal   = self.ex.fetch_balance()
-                c_bal = float(bal['total'].get(coin, 0.0))
-                # إذا Binance أعاد صفر (Testnet lag) — استخدم الكمية الداخلية
+                c_bal = float(bal["total"].get(coin, 0.0))
                 if c_bal < 0.000001:
                     c_bal = self.buy_amounts.get(coin, 0.0)
                 if c_bal < 0.000001:
-                    raise Exception(f"لا يوجد رصيد من {coin}")
-                sell_pct = settings["spot_sell_ratio"]
-                amt      = float(self.ex.amount_to_precision(pair, c_bal * sell_pct))
+                    raise Exception(f"No {coin} balance")
+                amt       = float(self.ex.amount_to_precision(pair, c_bal * settings["spot_sell_ratio"]))
                 total_val = round(amt * price, 2)
                 self.ex.create_market_sell_order(pair, amt)
                 buy_p     = self.buy_prices.get(coin, price)
                 trade_pnl = round((price - buy_p) * amt, 2)
                 pnl_pct   = round(((price - buy_p) / buy_p * 100), 2) if buy_p > 0 else 0
+                # Duration
+                buy_time = self.buy_times.get(coin)
+                duration_min = round((datetime.now() - buy_time).total_seconds() / 60, 1) if buy_time else 0
                 if coin in self.buy_prices:  del self.buy_prices[coin]
                 if coin in self.buy_amounts: del self.buy_amounts[coin]
+                if coin in self.buy_times:   del self.buy_times[coin]
                 update_daily_loss(trade_pnl)
                 action_type = "sell"
-                reason_ar   = _reason_ar(reason)
-                sign        = "+" if trade_pnl >= 0 else ""
-                msg = f"✅ بيع [{reason_ar}] {amt} {coin} @ {price:,.4f} | PnL: {sign}{trade_pnl}$ ({pnl_pct:+.2f}%)"
+                em   = "🟢" if trade_pnl >= 0 else "🔴"
+                sign = "+" if trade_pnl >= 0 else ""
+                add_toast(f"{em} SELL {coin}: {sign}{trade_pnl}$", "success" if trade_pnl >= 0 else "error")
                 if settings.get("telegram_on_trade"):
-                    from datetime import datetime as _dt, timezone, timedelta
-                    _now = _dt.now(timezone(timedelta(hours=3))).strftime("%H:%M:%S")
-                    em = "🟢" if trade_pnl >= 0 else "🔴"
                     asyncio.create_task(send_telegram(
-                        f"{em} <b>بيع — {coin}/USDT</b>\n"
-                        f"📌 السبب: {reason_ar}\n"
-                        f"🔵 سعر الدخول: <code>{buy_p:,.4f}$</code>\n"
-                        f"🔴 سعر البيع: <code>{price:,.4f}$</code>\n"
-                        f"📦 الكمية: <code>{amt}</code>\n"
-                        f"💵 الإجمالي: <code>{total_val}$</code>\n"
-                        f"📊 صافي الربح/الخسارة: <code>{sign}{trade_pnl}$ ({pnl_pct:+.2f}%)</code>\n"
-                        f"🕐 الوقت: <code>{_now}</code>"
+                        f"{em} <b>SELL — {coin}/USDT</b>\n"
+                        f"📌 Reason: {_reason_en(reason)}\n"
+                        f"🔵 Entry: <code>{buy_p:,.4f}$</code>\n"
+                        f"🔴 Exit: <code>{price:,.4f}$</code>\n"
+                        f"📊 PnL: <code>{sign}{trade_pnl}$ ({pnl_pct:+.2f}%)</code>\n"
+                        f"⏱ Duration: {duration_min}min"
                     ))
+                # Equity curve snapshot
+                equity_curve.append({"ts": int(datetime.now().timestamp() * 1000), "delta": trade_pnl})
             else:
-                raise Exception(f"أمر غير معروف: {side}")
+                raise Exception(f"Unknown order: {side}")
 
-            record = _make_record(pair, action_type, "SPOT", price, amt, total_val, trade_pnl, reason, msg, True)
+            record = _make_record(pair, action_type, "SPOT", price, amt, total_val, trade_pnl, reason, True)
             self.trades.appendleft(record)
-            print(f"💰 [SPOT] {msg}")
             return record
-
         except Exception as e:
-            err = str(e)
-            log_error(f"[SPOT] {side} {pair}: {err}")
-            record = _make_record(pair, side, "SPOT", price, amt, total_val, 0, reason, f"❌ {err[:100]}", False)
+            log_error(f"[SPOT] {side} {pair}: {e}")
+            record = _make_record(pair, side, "SPOT", price, amt, total_val, 0, reason, False, str(e)[:100])
             self.trades.appendleft(record)
             return record
 
     def liquidate_all(self):
         try:
             bal = self.ex.fetch_balance()
-            for coin, raw in bal['total'].items():
+            for coin, raw in bal["total"].items():
                 amt = float(raw or 0)
-                if coin in ('USDT','BUSD','USDC','TUSD','DAI') or amt < 0.000001:
+                if coin in ("USDT","BUSD","USDC","TUSD","DAI") or amt < 0.000001:
                     continue
-                pair = f"{coin}/USDT"
                 try:
                     self.ex.load_markets()
+                    pair = f"{coin}/USDT"
                     if pair in self.ex.markets:
                         self.ex.create_market_sell_order(pair, amt)
-                        print(f"🔴 تصفية {coin}")
                 except Exception as e:
                     log_error(f"Liquidate {coin}: {e}", notify=False)
         except Exception as e:
             log_error(f"Liquidate all: {e}", notify=False)
-
-    def performance_stats(self) -> dict:
-        trades = [t for t in self.trades if t.get('act') in ('sell','long_close') and t.get('success')]
-        if not trades:
-            return {'total':0,'wins':0,'losses':0,'win_rate':0,
-                    'best_trade':0,'worst_trade':0,'total_pnl':0,'max_drawdown':0}
-        pnls   = [t.get('pnl', 0) for t in trades]
-        # نحسب فقط الصفقات التي لها PNL حقيقي (غير صفر)
-        wins   = [p for p in pnls if p > 0]
-        losses = [p for p in pnls if p < 0]
-        peak = running = max_dd = 0
-        for p in pnls:
-            running += p
-            if running > peak: peak = running
-            dd = peak - running
-            if dd > max_dd: max_dd = dd
-        return {
-            'total':        len(trades),
-            'wins':         len(wins),
-            'losses':       len(losses),
-            'win_rate':     round(len(wins)/len(trades)*100, 1) if trades else 0,
-            'best_trade':   round(max(pnls), 2) if pnls else 0,
-            'worst_trade':  round(min(pnls), 2) if pnls else 0,
-            'total_pnl':    round(sum(pnls), 2),
-            'max_drawdown': round(max_dd, 2),
-        }
 
 
 # ══════════════════════════════════════════
@@ -495,1146 +532,242 @@ class SpotBot:
 class FuturesBot:
     def __init__(self):
         self.ex = ccxt.binance({
-            'apiKey':  os.getenv("BINANCE_FUTURES_API_KEY", os.getenv("BINANCE_API_KEY","")).strip(),
-            'secret':  os.getenv("BINANCE_FUTURES_SECRET_KEY", os.getenv("BINANCE_SECRET_KEY","")).strip(),
-            'enableRateLimit': True,
-            'options': {
-                'adjustForTimeDifference': True,
-                'recvWindow': 15000,
-                'defaultType': 'future',
-                'paper': True,
-            }
+            "apiKey":  os.getenv("BINANCE_FUTURES_API_KEY", os.getenv("BINANCE_API_KEY","")).strip(),
+            "secret":  os.getenv("BINANCE_FUTURES_SECRET_KEY", os.getenv("BINANCE_SECRET_KEY","")).strip(),
+            "enableRateLimit": True,
+            "options": {"adjustForTimeDifference": True, "recvWindow": 15000, "defaultType": "future"}
         })
-        # Binance Futures Testnet محذوف — يستخدم Demo Trading
-        self.trades:    deque = deque(maxlen=500)
-        self.positions: dict  = {}
+        self.trades:     deque = deque(maxlen=1000)
+        self.positions:  dict  = {}
+        self.open_times: dict  = {}
 
     async def get_balance(self) -> dict:
         try:
-            bal  = self.ex.fetch_balance({'type': 'future'})
-            usdt = float(bal['total'].get('USDT', 0.0))
+            bal  = self.ex.fetch_balance({"type":"future"})
+            usdt = float(bal["total"].get("USDT", 0.0))
             holdings = {}
             try:
                 for p in self.ex.fetch_positions():
-                    if not p or float(p.get('contracts', 0) or 0) == 0:
+                    if not p or float(p.get("contracts",0) or 0) == 0:
                         continue
-                    sym  = p['symbol']
-                    ep   = float(p.get('entryPrice', 0) or 0)
-                    cp   = float(p.get('markPrice', ep) or ep)
-                    side = p.get('side','')
-                    upnl = float(p.get('unrealizedPnl', 0) or 0)
+                    sym  = p["symbol"]
+                    ep   = float(p.get("entryPrice",0) or 0)
+                    cp   = float(p.get("markPrice", ep) or ep)
+                    side = p.get("side","")
+                    upnl = float(p.get("unrealizedPnl",0) or 0)
                     pct  = ((cp-ep)/ep*100) if ep > 0 else 0
-                    if side == 'short': pct = -pct
+                    if side == "short": pct = -pct
                     holdings[sym] = {
-                        'side':           side,
-                        'size':           float(p.get('contracts',0) or 0),
-                        'entry_price':    round(ep, 6),
-                        'current_price':  round(cp, 6),
-                        'unrealized_pnl': round(upnl, 2),
-                        'pnl_pct':        round(pct, 2),
-                        'leverage':       p.get('leverage', settings['leverage']),
+                        "side":           side,
+                        "size":           float(p.get("contracts",0) or 0),
+                        "entry_price":    round(ep,6),
+                        "current_price":  round(cp,6),
+                        "unrealized_pnl": round(upnl,2),
+                        "pnl_pct":        round(pct,2),
+                        "leverage":       p.get("leverage", settings["leverage"]),
                     }
-            except Exception:
+            except:
                 pass
             pnl = usdt - INITIAL_BALANCE
-            return {
-                'usdt':     round(usdt, 2),
-                'total':    round(usdt, 2),
-                'pnl':      round(pnl, 2),
-                'pnl_pct':  round((pnl / INITIAL_BALANCE) * 100, 2),
-                'holdings': holdings,
-            }
+            return {"usdt":round(usdt,2),"total":round(usdt,2),"pnl":round(pnl,2),
+                    "pnl_pct":round((pnl/INITIAL_BALANCE)*100,2),"holdings":holdings}
         except Exception as e:
-            # لا نطبع الخطأ إذا كان API Key غير موجود
             if "-2008" not in str(e) and "Invalid Api" not in str(e):
                 log_error(f"Futures balance: {e}", notify=False)
-            return {'usdt':0.0,'total':INITIAL_BALANCE,'pnl':0.0,'pnl_pct':0.0,'holdings':{}}
+            return {"usdt":0,"total":INITIAL_BALANCE,"pnl":0,"pnl_pct":0,"holdings":{}}
 
     @staticmethod
-    def fix_pair(pair: str) -> str:
-        pair = pair.upper().strip().replace("USDTUSDT","USDT").replace(".P","")
-        if "/" in pair:           return pair
-        if pair.endswith("USDT"): return f"{pair[:-4]}/USDT"
-        return f"{pair}/USDT"
+    def fix_pair(p: str) -> str:
+        p = p.upper().strip().replace("USDTUSDT","USDT").replace(".P","")
+        if "/" in p: return p
+        if p.endswith("USDT"): return f"{p[:-4]}/USDT"
+        return f"{p}/USDT"
 
     def execute(self, pair: str, direction: str, reason: str = "") -> dict:
         direction = direction.lower().strip()
         pair      = self.fix_pair(pair)
         price = amt = total_val = trade_pnl = 0.0
-
         try:
             self.ex.load_markets()
-            price = float(self.ex.fetch_ticker(pair)['last'])
+            price = float(self.ex.fetch_ticker(pair)["last"])
             try:
-                self.ex.set_leverage(settings['leverage'], pair)
-            except Exception:
+                self.ex.set_leverage(settings["leverage"], pair)
+            except:
                 pass
-
             val = settings["futures_value"]
             amt = float(self.ex.amount_to_precision(pair, val / price))
             total_val = round(amt * price, 2)
-
-            # alias
-            if direction == "buy":   direction = "long_open"
+            if direction == "buy": direction = "long_open"
             elif direction == "sell":
-                if pair in self.positions and self.positions[pair]['side'] == 'long':
-                    direction = "long_close"
-                else:
-                    direction = "short_open"
-
+                direction = "long_close" if (pair in self.positions and self.positions[pair]["side"] == "long") else "short_open"
             if direction == "long_open":
-                self.ex.create_market_buy_order(pair, amt, {'reduceOnly': False})
-                self.positions[pair] = {'side':'long','entry':price,'amt':amt}
-                msg = f"✅ Long {amt} @ {price:,.4f} × {settings['leverage']}x"
-                action_type = "long_open"
+                self.ex.create_market_buy_order(pair, amt, {"reduceOnly": False})
+                self.positions[pair] = {"side":"long","entry":price,"amt":amt}
+                self.open_times[pair] = datetime.now()
+                add_toast(f"🔵 LONG {pair} @ {price:,.4f}", "info")
                 if settings.get("telegram_on_trade"):
-                    asyncio.create_task(send_telegram(
-                        f"🔵 <b>Long — {pair}</b>\n{amt} @ <code>{price:,.4f}</code> × {settings['leverage']}x"
-                    ))
-
+                    asyncio.create_task(send_telegram(f"🔵 <b>Long — {pair}</b>\n{amt} @ <code>{price:,.4f}</code> ×{settings['leverage']}x"))
             elif direction == "long_close":
                 pos = self.positions.get(pair, {})
-                amt = pos.get('amt', amt)
-                self.ex.create_market_sell_order(pair, amt, {'reduceOnly': True})
-                entry     = pos.get('entry', price)
-                trade_pnl = round((price-entry)*amt*settings['leverage'], 2)
-                pnl_pct   = round(((price-entry)/entry*100)*settings['leverage'], 2) if entry else 0
-                if pair in self.positions: del self.positions[pair]
+                amt = pos.get("amt", amt)
+                self.ex.create_market_sell_order(pair, amt, {"reduceOnly": True})
+                entry     = pos.get("entry", price)
+                trade_pnl = round((price - entry) * amt * settings["leverage"], 2)
+                pnl_pct   = round(((price-entry)/entry*100)*settings["leverage"],2) if entry else 0
+                if pair in self.positions:  del self.positions[pair]
+                if pair in self.open_times: del self.open_times[pair]
                 update_daily_loss(trade_pnl)
-                reason_ar = _reason_ar(reason)
                 sign = "+" if trade_pnl >= 0 else ""
-                msg = f"✅ إغلاق Long [{reason_ar}] @ {price:,.4f} | PnL: {sign}{trade_pnl}$ ({pnl_pct:+.2f}%)"
-                action_type = "long_close"
+                em   = "🟢" if trade_pnl >= 0 else "🔴"
+                add_toast(f"{em} Long Close {pair}: {sign}{trade_pnl}$", "success" if trade_pnl >= 0 else "error")
                 if settings.get("telegram_on_trade"):
-                    em = "🟢" if trade_pnl >= 0 else "🔴"
-                    asyncio.create_task(send_telegram(
-                        f"{em} <b>إغلاق Long — {pair}</b>\nPnL: <code>{sign}{trade_pnl}$ ({pnl_pct:+.2f}%)</code>"
-                    ))
-
+                    asyncio.create_task(send_telegram(f"{em} <b>Long Close — {pair}</b>\nPnL: <code>{sign}{trade_pnl}$ ({pnl_pct:+.2f}%)</code>"))
+                equity_curve.append({"ts": int(datetime.now().timestamp()*1000), "delta": trade_pnl})
             elif direction == "short_open":
-                self.ex.create_market_sell_order(pair, amt, {'reduceOnly': False})
-                self.positions[pair] = {'side':'short','entry':price,'amt':amt}
-                msg = f"✅ Short {amt} @ {price:,.4f} × {settings['leverage']}x"
-                action_type = "short_open"
+                self.ex.create_market_sell_order(pair, amt, {"reduceOnly": False})
+                self.positions[pair] = {"side":"short","entry":price,"amt":amt}
+                self.open_times[pair] = datetime.now()
+                add_toast(f"🟣 SHORT {pair} @ {price:,.4f}", "info")
                 if settings.get("telegram_on_trade"):
-                    asyncio.create_task(send_telegram(
-                        f"🟣 <b>Short — {pair}</b>\n{amt} @ <code>{price:,.4f}</code> × {settings['leverage']}x"
-                    ))
-
+                    asyncio.create_task(send_telegram(f"🟣 <b>Short — {pair}</b>\n{amt} @ <code>{price:,.4f}</code> ×{settings['leverage']}x"))
             elif direction == "short_close":
                 pos = self.positions.get(pair, {})
-                amt = pos.get('amt', amt)
-                self.ex.create_market_buy_order(pair, amt, {'reduceOnly': True})
-                entry     = pos.get('entry', price)
-                trade_pnl = round((entry-price)*amt*settings['leverage'], 2)
-                pnl_pct   = round(((entry-price)/entry*100)*settings['leverage'], 2) if entry else 0
-                if pair in self.positions: del self.positions[pair]
+                amt = pos.get("amt", amt)
+                self.ex.create_market_buy_order(pair, amt, {"reduceOnly": True})
+                entry     = pos.get("entry", price)
+                trade_pnl = round((entry - price) * amt * settings["leverage"], 2)
+                pnl_pct   = round(((entry-price)/entry*100)*settings["leverage"],2) if entry else 0
+                if pair in self.positions:  del self.positions[pair]
+                if pair in self.open_times: del self.open_times[pair]
                 update_daily_loss(trade_pnl)
-                reason_ar = _reason_ar(reason)
                 sign = "+" if trade_pnl >= 0 else ""
-                msg = f"✅ إغلاق Short [{reason_ar}] @ {price:,.4f} | PnL: {sign}{trade_pnl}$ ({pnl_pct:+.2f}%)"
-                action_type = "short_close"
+                em   = "🟢" if trade_pnl >= 0 else "🔴"
+                add_toast(f"{em} Short Close {pair}: {sign}{trade_pnl}$", "success" if trade_pnl >= 0 else "error")
                 if settings.get("telegram_on_trade"):
-                    em = "🟢" if trade_pnl >= 0 else "🔴"
-                    asyncio.create_task(send_telegram(
-                        f"{em} <b>إغلاق Short — {pair}</b>\nPnL: <code>{sign}{trade_pnl}$ ({pnl_pct:+.2f}%)</code>"
-                    ))
+                    asyncio.create_task(send_telegram(f"{em} <b>Short Close — {pair}</b>\nPnL: <code>{sign}{trade_pnl}$ ({pnl_pct:+.2f}%)</code>"))
+                equity_curve.append({"ts": int(datetime.now().timestamp()*1000), "delta": trade_pnl})
             else:
-                raise Exception(f"أمر غير معروف: {direction}")
-
-            record = _make_record(pair, action_type, "FUTURES", price, amt, total_val, trade_pnl, reason, msg, True)
+                raise Exception(f"Unknown direction: {direction}")
+            record = _make_record(pair, direction, "FUTURES", price, amt, total_val, trade_pnl, reason, True)
             self.trades.appendleft(record)
-            print(f"💰 [FUTURES] {msg}")
             return record
-
         except Exception as e:
-            err = str(e)
-            log_error(f"[FUTURES] {direction} {pair}: {err}")
-            record = _make_record(pair, direction, "FUTURES", price, amt, total_val, 0, reason, f"❌ {err[:100]}", False)
+            log_error(f"[FUTURES] {direction} {pair}: {e}")
+            record = _make_record(pair, direction, "FUTURES", price, amt, total_val, 0, reason, False, str(e)[:100])
             self.trades.appendleft(record)
             return record
 
     def close_all(self):
         for pair, pos in list(self.positions.items()):
             try:
-                if pos['side'] == 'long':
-                    self.ex.create_market_sell_order(pair, pos['amt'], {'reduceOnly': True})
+                if pos["side"] == "long":
+                    self.ex.create_market_sell_order(pair, pos["amt"], {"reduceOnly": True})
                 else:
-                    self.ex.create_market_buy_order(pair, pos['amt'], {'reduceOnly': True})
+                    self.ex.create_market_buy_order(pair, pos["amt"], {"reduceOnly": True})
                 del self.positions[pair]
-                print(f"🔴 إغلاق {pos['side']} {pair}")
             except Exception as e:
                 log_error(f"Close {pair}: {e}", notify=False)
 
 
 # ══════════════════════════════════════════
-# مساعدات
+# Helpers
 # ══════════════════════════════════════════
-def _reason_ar(r: str) -> str:
-    return {"stop_loss":"وقف خسارة 🛑","peak_exit":"ذروة 🎯","trailing_stop":"وقف متحرك 📉"}.get(r, "خروج")
+def _reason_en(r: str) -> str:
+    return {"stop_loss":"Stop Loss 🛑","peak_exit":"Peak Exit 🎯","trailing_stop":"Trailing Stop 📉"}.get(r,"Exit")
 
-def _make_record(pair, act, market, price, amt, total, pnl, reason, msg, success) -> dict:
+def _make_record(pair,act,market,price,amt,total,pnl,reason,success,err="") -> dict:
     return {
-        'id':      int(datetime.now().timestamp() * 1000),
-        'time':    datetime.now().strftime("%H:%M:%S"),
-        'date':    datetime.now().strftime("%d/%m/%Y"),
-        'market':  market,
-        'pair':    pair,
-        'act':     act,
-        'price':   round(price, 6),
-        'amount':  round(amt, 6),
-        'total':   round(total, 2),
-        'pnl':     round(pnl, 2),
-        'reason':  reason,
-        'st':      msg,
-        'success': success,
+        "id":      int(datetime.now().timestamp()*1000),
+        "time":    datetime.now().strftime("%H:%M:%S"),
+        "date":    datetime.now().strftime("%d/%m/%Y"),
+        "market":  market,
+        "pair":    pair,
+        "act":     act,
+        "price":   round(price,6),
+        "amount":  round(amt,6),
+        "total":   round(total,2),
+        "pnl":     round(pnl,2),
+        "reason":  reason,
+        "success": success,
+        "err":     err,
     }
 
-
-# ══════════════════════════════════════════
-# إنشاء البوتات
-# ══════════════════════════════════════════
 spot_bot    = SpotBot()
 futures_bot = FuturesBot()
 
 
 # ══════════════════════════════════════════
-# أكثر العملات تقلباً
+# Top Movers
 # ══════════════════════════════════════════
 async def get_top_movers(limit: int = 10) -> list:
     try:
         tickers = spot_bot.ex.fetch_tickers()
         movers  = []
         for sym, t in tickers.items():
-            if not sym.endswith('/USDT'):
+            if not sym.endswith("/USDT"):
                 continue
-            pct = float(t.get('percentage', 0) or 0)
-            vol = float(t.get('quoteVolume', 0) or 0)
+            pct = float(t.get("percentage",0) or 0)
+            vol = float(t.get("quoteVolume",0) or 0)
             if vol < 500_000:
                 continue
             movers.append({
-                'symbol':     sym.replace('/USDT',''),
-                'price':      t.get('last', 0),
-                'change_pct': round(pct, 2),
-                'volume_m':   round(vol / 1_000_000, 2),
-                'high':       t.get('high', 0),
-                'low':        t.get('low', 0),
+                "symbol":     sym.replace("/USDT",""),
+                "price":      t.get("last",0),
+                "change_pct": round(pct,2),
+                "volume_m":   round(vol/1_000_000,2),
+                "high":       t.get("high",0),
+                "low":        t.get("low",0),
             })
-        movers.sort(key=lambda x: abs(x['change_pct']), reverse=True)
+        movers.sort(key=lambda x: abs(x["change_pct"]), reverse=True)
         return movers[:limit]
     except Exception as e:
-        log_error(f"Top movers: {e}", notify=False)
+        log_error(f"Movers: {e}", notify=False)
         return []
 
 
 # ══════════════════════════════════════════
-# State
+# Full State
 # ══════════════════════════════════════════
 async def get_full_state() -> dict:
     spot_bal    = await spot_bot.get_balance()
     futures_bal = await futures_bot.get_balance()
     all_trades  = sorted(
         list(spot_bot.trades) + list(futures_bot.trades),
-        key=lambda x: x.get('id', 0), reverse=True
-    )[:500]
-    stats = spot_bot.performance_stats()
+        key=lambda x: x.get("id",0), reverse=True
+    )[:1000]
+    stats        = calc_advanced_stats(all_trades)
+    period_stats = get_period_stats(all_trades, settings.get("report_hours",24))
+    # Build equity curve (running balance)
+    running = INITIAL_BALANCE
+    eq = []
+    for snap in reversed(list(equity_curve)):
+        running += snap["delta"]
+        eq.append({"ts": snap["ts"], "value": round(running, 2)})
     return {
-        "spot":       spot_bal,
-        "futures":    futures_bal,
-        "trades":     all_trades,
-        "settings":   {k: v for k, v in settings.items() if k not in ('daily_loss_current','daily_loss_date')},
-        "stats":      stats,
-        "errors":     list(error_logs)[:50],
-        "daily_loss": {
-            "current": round(settings["daily_loss_current"], 2),
-            "limit":   round(INITIAL_BALANCE * settings["daily_loss_limit_pct"] / 100, 2),
-        },
+        "spot":         spot_bal,
+        "futures":      futures_bal,
+        "trades":       all_trades,
+        "settings":     {k:v for k,v in settings.items() if k not in ("daily_loss_current","daily_loss_date")},
+        "stats":        stats,
+        "period_stats": period_stats,
+        "errors":       list(error_logs)[:100],
+        "login_logs":   list(login_logs)[:50],
+        "daily_loss":   {"current": round(settings["daily_loss_current"],2), "limit": round(INITIAL_BALANCE*settings["daily_loss_limit_pct"]/100,2)},
+        "equity_curve": eq[-200:],
+        "toasts":       list(toast_queue),
+        "initial_balance": INITIAL_BALANCE,
     }
-
 
 async def broadcast(data: dict):
     dead = []
     for ws in active_connections:
         try:
             await ws.send_json(data)
-        except Exception:
+        except:
             dead.append(ws)
     for ws in dead:
         if ws in active_connections:
             active_connections.remove(ws)
-
-
-# ══════════════════════════════════════════
-# HTML — SOVEREIGN V7.0
-# ══════════════════════════════════════════
-HTML = r"""<!DOCTYPE html>
-<html lang="ar" dir="rtl">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SOVEREIGN V7</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;600;700&family=Cairo:wght@300;400;600;700;900&display=swap" rel="stylesheet">
-<style>
-:root{
-  --bg:#030508;--s1:#080c14;--s2:#0c1220;--border:rgba(255,255,255,.055);
-  --gold:#d4a017;--gold2:#e8b84b;--gold-dim:rgba(212,160,23,.1);--gold-glow:rgba(212,160,23,.2);
-  --green:#00c97a;--green-dim:rgba(0,201,122,.1);
-  --red:#e83a3a;--red-dim:rgba(232,58,58,.1);
-  --blue:#2eb8e6;--blue-dim:rgba(46,184,230,.1);
-  --purple:#9d78f5;--purple-dim:rgba(157,120,245,.1);
-  --orange:#f08030;--orange-dim:rgba(240,128,48,.1);
-  --text:#c8d4e0;--text2:#7a8fa0;--muted:#3d4f60;
-  --mono:'IBM Plex Mono',monospace;--ar:'Cairo',sans-serif;
-  --r:10px;--r2:6px;
-}
-*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-html{scroll-behavior:smooth}
-body{background:var(--bg);color:var(--text);font-family:var(--ar);min-height:100vh;overflow-x:hidden}
-body::before{content:'';position:fixed;inset:0;background:
-  repeating-linear-gradient(0deg,transparent,transparent 59px,rgba(212,160,23,.012) 60px),
-  repeating-linear-gradient(90deg,transparent,transparent 59px,rgba(212,160,23,.012) 60px);
-  pointer-events:none;z-index:0}
-
-/* ── Login ─────────────────────────── */
-#loginPage{position:fixed;inset:0;background:var(--bg);z-index:999;display:flex;align-items:center;justify-content:center}
-.lbox{background:var(--s1);border:1px solid rgba(212,160,23,.18);border-radius:20px;padding:52px 44px;width:360px;text-align:center;position:relative}
-.lbox::before{content:'';position:absolute;top:0;left:10%;right:10%;height:1px;background:linear-gradient(90deg,transparent,var(--gold),transparent)}
-.llogo{font-family:var(--mono);font-size:26px;font-weight:700;color:var(--gold);letter-spacing:5px;text-shadow:0 0 30px var(--gold-glow)}
-.lsub{font-family:var(--mono);font-size:9px;letter-spacing:3px;color:var(--muted);margin:6px 0 38px}
-.linput{width:100%;background:rgba(255,255,255,.03);border:1px solid var(--border);border-radius:var(--r2);color:var(--text);font-family:var(--mono);font-size:15px;padding:13px;text-align:center;letter-spacing:6px;outline:none;transition:border-color .2s;margin-bottom:14px}
-.linput:focus{border-color:rgba(212,160,23,.35)}
-.lbtn{width:100%;background:linear-gradient(135deg,rgba(212,160,23,.18),rgba(212,160,23,.08));border:1px solid rgba(212,160,23,.28);color:var(--gold);font-family:var(--mono);font-size:12px;font-weight:700;padding:13px;border-radius:var(--r2);cursor:pointer;letter-spacing:2px;transition:all .2s}
-.lbtn:hover{background:linear-gradient(135deg,rgba(212,160,23,.28),rgba(212,160,23,.14));box-shadow:0 0 24px var(--gold-glow)}
-.lerr{color:var(--red);font-family:var(--mono);font-size:11px;margin-top:12px;display:none}
-
-/* ── Wrap ───────────────────────────── */
-#dash{display:none}
-.wrap{max-width:1440px;margin:0 auto;padding:16px;position:relative;z-index:1}
-
-/* ── Header ─────────────────────────── */
-.hdr{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 22px;background:var(--s1);border:1px solid var(--border);border-radius:var(--r);margin-bottom:10px;position:relative;overflow:hidden}
-.hdr::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent 0%,var(--gold) 50%,transparent 100%)}
-.logo{font-family:var(--mono);font-size:17px;font-weight:700;color:var(--gold);letter-spacing:3px;text-shadow:0 0 16px var(--gold-glow);white-space:nowrap}
-.logo span{display:block;font-size:8px;letter-spacing:2px;color:var(--muted);margin-top:2px;font-weight:400}
-.hdr-r{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.cbadge{display:flex;align-items:center;gap:5px;padding:5px 11px;border-radius:16px;font-family:var(--mono);font-size:9px;font-weight:700;border:1px solid;transition:all .3s}
-.cbadge.on{color:var(--green);border-color:rgba(0,201,122,.28);background:var(--green-dim)}
-.cbadge.off{color:var(--red);border-color:rgba(232,58,58,.28);background:var(--red-dim)}
-.dot{width:5px;height:5px;border-radius:50%;background:currentColor;animation:blink 2s infinite}
-@keyframes blink{0%,100%{opacity:1}50%{opacity:.25}}
-.sbadge{padding:5px 12px;border-radius:16px;font-family:var(--mono);font-size:9px;font-weight:700;border:1px solid;white-space:nowrap}
-.s-on{background:var(--green-dim);color:var(--green);border-color:rgba(0,201,122,.28)}
-.s-pause{background:rgba(240,200,48,.08);color:#f0c830;border-color:rgba(240,200,48,.22)}
-.s-emer{background:var(--red-dim);color:var(--red);border-color:rgba(232,58,58,.35);animation:ep 1s infinite}
-.s-cal{background:var(--orange-dim);color:var(--orange);border-color:rgba(240,128,48,.28)}
-@keyframes ep{0%,100%{opacity:1}50%{opacity:.3}}
-
-/* ── Ticker ─────────────────────────── */
-.ticker{background:var(--s1);border:1px solid var(--border);border-radius:var(--r2);padding:7px 16px;margin-bottom:10px;font-family:var(--mono);font-size:10px;color:var(--muted);display:flex;align-items:center;gap:12px;flex-wrap:wrap}
-.tlive{color:var(--gold);font-weight:700;background:var(--gold-dim);padding:2px 8px;border-radius:3px}
-.tsep{color:var(--border)}
-
-/* ── Tabs ───────────────────────────── */
-.tabs{display:flex;gap:3px;padding:5px;background:var(--s1);border:1px solid var(--border);border-radius:var(--r);margin-bottom:10px}
-.tab{flex:1;padding:9px 6px;border-radius:var(--r2);font-family:var(--ar);font-size:11px;font-weight:600;cursor:pointer;border:none;background:transparent;color:var(--muted);transition:all .2s;text-align:center}
-.tab.active{background:var(--gold-dim);color:var(--gold);border:1px solid rgba(212,160,23,.2)}
-.tab:hover:not(.active){background:rgba(255,255,255,.03);color:var(--text2)}
-.panel{display:none}
-.panel.active{display:block}
-
-/* ── Actions Bar ────────────────────── */
-.abar{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:10px;align-items:center}
-.btn{padding:8px 14px;border-radius:var(--r2);font-family:var(--ar);font-size:11px;font-weight:700;cursor:pointer;border:1px solid;transition:all .18s;display:inline-flex;align-items:center;gap:5px;white-space:nowrap;line-height:1}
-.btn:active{transform:scale(.97)}
-.bg{background:var(--green-dim);color:var(--green);border-color:rgba(0,201,122,.28)}
-.bg:hover{background:rgba(0,201,122,.18)}
-.by{background:rgba(240,200,48,.07);color:#f0c830;border-color:rgba(240,200,48,.22)}
-.by:hover{background:rgba(240,200,48,.14)}
-.br{background:var(--red-dim);color:var(--red);border-color:rgba(232,58,58,.28)}
-.br:hover{background:rgba(232,58,58,.18)}
-.bb{background:var(--blue-dim);color:var(--blue);border-color:rgba(46,184,230,.28)}
-.bb:hover{background:rgba(46,184,230,.18)}
-.bo{background:var(--gold-dim);color:var(--gold);border-color:rgba(212,160,23,.28)}
-.bo:hover{background:rgba(212,160,23,.18)}
-.bx{background:rgba(255,255,255,.03);color:var(--muted);border-color:var(--border)}
-
-/* ── Balance Grid ───────────────────── */
-.bg2{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}
-@media(max-width:700px){.bg2{grid-template-columns:1fr}}
-.bpanel{background:var(--s1);border:1px solid var(--border);border-radius:var(--r);padding:16px;position:relative;overflow:hidden}
-.bpanel.spot{border-color:rgba(46,184,230,.12)}
-.bpanel.fut{border-color:rgba(157,120,245,.12)}
-.bpanel::before{content:'';position:absolute;top:0;left:0;right:0;height:1px}
-.bpanel.spot::before{background:linear-gradient(90deg,transparent,var(--blue),transparent)}
-.bpanel.fut::before{background:linear-gradient(90deg,transparent,var(--purple),transparent)}
-.ptitle{font-family:var(--mono);font-size:9px;font-weight:700;letter-spacing:2px;text-transform:uppercase;margin-bottom:14px;display:flex;align-items:center;gap:7px}
-.spot .ptitle{color:var(--blue)}
-.fut .ptitle{color:var(--purple)}
-.ptag{padding:2px 7px;border-radius:3px;font-size:8px;font-family:var(--mono);font-weight:700}
-.stag{background:var(--blue-dim);color:var(--blue);border:1px solid rgba(46,184,230,.18)}
-.ftag{background:var(--purple-dim);color:var(--purple);border:1px solid rgba(157,120,245,.18)}
-.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
-.metric .lbl{font-size:8px;color:var(--muted);font-family:var(--mono);text-transform:uppercase;letter-spacing:1px;margin-bottom:4px}
-.metric .val{font-family:var(--mono);font-size:19px;font-weight:700;line-height:1}
-.metric .sub{font-size:9px;color:var(--muted);font-family:var(--mono);margin-top:3px}
-.cg{color:var(--gold)} .cgr{color:var(--green)} .cr{color:var(--red)} .cb{color:var(--blue)} .cp{color:var(--purple)} .cm{color:var(--muted)} .co{color:var(--orange)}
-
-/* ── Daily Loss Bar ─────────────────── */
-.dlbar-wrap{margin-top:12px}
-.dlbar-row{display:flex;justify-content:space-between;font-family:var(--mono);font-size:9px;color:var(--muted);margin-bottom:4px}
-.dlbar{height:3px;background:rgba(255,255,255,.05);border-radius:2px;overflow:hidden}
-.dlbar-fill{height:100%;border-radius:2px;transition:width .6s,background .4s}
-
-/* ── Stats Grid ─────────────────────── */
-.sgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px}
-@media(max-width:900px){.sgrid{grid-template-columns:repeat(2,1fr)}}
-.scard{background:var(--s1);border:1px solid var(--border);border-radius:var(--r);padding:14px;position:relative;overflow:hidden}
-.scard .si{position:absolute;top:10px;left:10px;font-size:22px;opacity:.06}
-.scard .sl{font-size:8px;color:var(--muted);font-family:var(--mono);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:7px}
-.scard .sv{font-family:var(--mono);font-size:20px;font-weight:700;line-height:1}
-.scard .ss{font-size:9px;color:var(--muted);font-family:var(--mono);margin-top:4px}
-
-/* ── Futures Holdings ───────────────── */
-.fh-wrap{margin-top:12px}
-.fh-title{font-size:8px;color:var(--muted);font-family:var(--mono);text-transform:uppercase;letter-spacing:1.5px;margin-bottom:6px}
-.fh-table{width:100%;font-family:var(--mono);font-size:10px;border-collapse:collapse}
-.fh-table th{font-size:8px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;padding:4px 6px;text-align:right;border-bottom:1px solid var(--border)}
-.fh-table td{padding:6px;text-align:right;border-bottom:1px solid rgba(255,255,255,.02)}
-
-/* ── Section ────────────────────────── */
-.section{background:var(--s1);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;margin-bottom:10px}
-.sh{padding:12px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
-.sh-title{font-size:9px;font-family:var(--mono);color:var(--muted);text-transform:uppercase;letter-spacing:2px}
-.ctag{font-family:var(--mono);font-size:9px;color:var(--gold);background:var(--gold-dim);padding:2px 9px;border-radius:12px}
-
-/* ── Table ──────────────────────────── */
-table{width:100%;border-collapse:collapse}
-thead th{padding:9px 14px;font-size:8px;font-family:var(--mono);color:var(--muted);text-transform:uppercase;letter-spacing:1.5px;text-align:right;background:rgba(255,255,255,.018);border-bottom:1px solid var(--border)}
-tbody tr{border-bottom:1px solid rgba(255,255,255,.022);transition:background .15s}
-tbody tr:hover{background:rgba(255,255,255,.018)}
-tbody tr.flash{animation:rf 1.6s ease-out}
-@keyframes rf{0%{background:rgba(212,160,23,.12)}100%{background:transparent}}
-td{padding:10px 14px;font-size:11px;text-align:right;vertical-align:middle}
-.tm{font-family:var(--mono)}
-.tmuted{color:var(--muted);font-size:9px;font-family:var(--mono)}
-.tpair{font-family:var(--mono);font-weight:700;font-size:12px}
-.tprice{font-family:var(--mono);color:var(--gold)}
-
-/* ── Badges ─────────────────────────── */
-.badge{display:inline-flex;align-items:center;padding:2px 8px;border-radius:4px;font-family:var(--mono);font-size:8px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;white-space:nowrap}
-.bbuy{background:var(--green-dim);color:var(--green);border:1px solid rgba(0,201,122,.18)}
-.bsell{background:var(--red-dim);color:var(--red);border:1px solid rgba(232,58,58,.18)}
-.blong{background:var(--blue-dim);color:var(--blue);border:1px solid rgba(46,184,230,.18)}
-.blclose{background:rgba(46,184,230,.04);color:var(--blue);border:1px solid rgba(46,184,230,.1)}
-.bshort{background:var(--purple-dim);color:var(--purple);border:1px solid rgba(157,120,245,.18)}
-.bsclose{background:rgba(157,120,245,.04);color:var(--purple);border:1px solid rgba(157,120,245,.1)}
-.mkt-s{background:var(--blue-dim);color:var(--blue);font-family:var(--mono);font-size:7px;padding:2px 5px;border-radius:3px;font-weight:700}
-.mkt-f{background:var(--purple-dim);color:var(--purple);font-family:var(--mono);font-size:7px;padding:2px 5px;border-radius:3px;font-weight:700}
-
-/* ── PnL Colors ─────────────────────── */
-.pp{color:var(--green);font-family:var(--mono);font-weight:700}
-.pn{color:var(--red);font-family:var(--mono);font-weight:700}
-.pz{color:var(--muted);font-family:var(--mono)}
-
-/* ── Settings Panel ─────────────────── */
-.sgp{background:var(--s1);border:1px solid var(--border);border-radius:var(--r);padding:16px 20px;margin-bottom:10px}
-.sgp-title{font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:2px;margin-bottom:14px}
-.sgrid2{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px}
-.sgrp{background:var(--s2);border:1px solid var(--border);border-radius:var(--r2);padding:14px}
-.sgrp-title{font-size:10px;color:var(--text2);font-family:var(--mono);margin-bottom:12px;display:flex;align-items:center;gap:6px;font-weight:600}
-.srow{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px}
-.srow:last-child{margin-bottom:0}
-.slabel{font-size:11px;color:var(--text2);font-family:var(--ar)}
-.toggle{position:relative;display:inline-block;width:38px;height:20px;flex-shrink:0}
-.toggle input{opacity:0;width:0;height:0}
-.tslider{position:absolute;cursor:pointer;inset:0;background:var(--s1);border:1px solid var(--border);border-radius:20px;transition:.28s}
-.tslider:before{position:absolute;content:"";height:14px;width:14px;left:2px;bottom:2px;background:var(--muted);border-radius:50%;transition:.28s}
-.toggle input:checked+.tslider{background:var(--green-dim);border-color:rgba(0,201,122,.35)}
-.toggle input:checked+.tslider:before{transform:translateX(18px);background:var(--green)}
-.ninput{background:rgba(255,255,255,.04);border:1px solid var(--border);color:var(--gold);font-family:var(--mono);font-size:11px;font-weight:600;width:68px;padding:5px 7px;border-radius:5px;text-align:center;outline:none}
-.ninput:focus{border-color:rgba(212,160,23,.35)}
-.ninput[type=time]{width:82px}
-.sinput{background:rgba(255,255,255,.04);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:10px;padding:5px 7px;border-radius:5px;cursor:pointer;outline:none}
-.sinput:focus{border-color:rgba(212,160,23,.35)}
-
-/* ── Movers ─────────────────────────── */
-.mgrid{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:10px}
-@media(max-width:1000px){.mgrid{grid-template-columns:repeat(3,1fr)}}
-@media(max-width:600px){.mgrid{grid-template-columns:repeat(2,1fr)}}
-.mcard{background:var(--s1);border:1px solid var(--border);border-radius:var(--r2);padding:14px;text-align:center;transition:border-color .2s}
-.mcard:hover{border-color:rgba(212,160,23,.2)}
-.msym{font-family:var(--mono);font-size:13px;font-weight:700;color:var(--text);margin-bottom:5px}
-.mpct{font-family:var(--mono);font-size:15px;font-weight:700}
-.mvol{font-size:9px;color:var(--muted);font-family:var(--mono);margin-top:3px}
-
-/* ── Calendar Card ──────────────────── */
-.cal-card{background:var(--s1);border:1px solid rgba(240,128,48,.18);border-radius:var(--r);padding:14px;margin-bottom:10px}
-.cal-row{display:flex;align-items:center;gap:10px;padding:10px;background:var(--orange-dim);border-radius:var(--r2)}
-.cal-dot{width:7px;height:7px;border-radius:50%;background:var(--orange);animation:blink 1.5s infinite;flex-shrink:0}
-
-/* ── Error Log ──────────────────────── */
-.eitem{display:flex;align-items:flex-start;gap:10px;padding:10px 16px;border-bottom:1px solid rgba(255,255,255,.025)}
-.etime{color:var(--muted);font-family:var(--mono);font-size:9px;white-space:nowrap;margin-top:1px}
-.emsg{color:var(--red);font-family:var(--mono);font-size:11px;flex:1;word-break:break-all}
-
-/* ── Portfolio Table ────────────────── */
-.port-table{width:100%;border-collapse:collapse}
-.port-table th{padding:9px 14px;font-size:8px;font-family:var(--mono);color:var(--muted);text-transform:uppercase;letter-spacing:1.5px;text-align:right;background:rgba(255,255,255,.018);border-bottom:1px solid var(--border)}
-.port-table td{padding:12px 14px;text-align:right;border-bottom:1px solid rgba(255,255,255,.022);font-family:var(--mono);font-size:12px}
-.port-table tr:hover td{background:rgba(255,255,255,.018)}
-
-/* ── Empty ───────────────────────────── */
-.empty{padding:50px;text-align:center;color:var(--muted);font-family:var(--mono);font-size:12px}
-.empty-i{font-size:32px;display:block;margin-bottom:10px;opacity:.18}
-
-/* ── Modal ───────────────────────────── */
-.modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.82);z-index:500;align-items:center;justify-content:center;padding:20px}
-.modal.open{display:flex}
-.mbox{background:var(--s1);border:1px solid rgba(212,160,23,.14);border-radius:16px;padding:28px;max-width:460px;width:100%;max-height:85vh;overflow-y:auto;position:relative}
-.mbox::before{content:'';position:absolute;top:0;left:10%;right:10%;height:1px;background:linear-gradient(90deg,transparent,var(--gold),transparent)}
-.mtitle{font-family:var(--mono);color:var(--gold);font-weight:700;letter-spacing:2px;font-size:12px;margin-bottom:18px}
-.mclose{position:absolute;top:14px;left:18px;background:none;border:none;color:var(--muted);cursor:pointer;font-size:18px;line-height:1;transition:color .2s}
-.mclose:hover{color:var(--text)}
-
-/* ── Scrollbar ───────────────────────── */
-::-webkit-scrollbar{width:3px;height:3px}
-::-webkit-scrollbar-track{background:transparent}
-::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
-
-/* ── Mobile ──────────────────────────── */
-@media(max-width:600px){
-  .wrap{padding:10px}
-  .hdr{padding:12px 14px}
-  .logo{font-size:14px;letter-spacing:2px}
-  .metrics{grid-template-columns:repeat(3,1fr)}
-  .metric .val{font-size:15px}
-  .sgrid{grid-template-columns:1fr 1fr}
-  table{font-size:10px}
-  td,thead th{padding:7px 10px}
-  .tabs .tab{font-size:10px;padding:8px 4px}
-}
-</style>
-</head>
-<body>
-
-<!-- ═══ LOGIN ═══════════════════════════════════ -->
-<div id="loginPage">
-  <div class="lbox">
-    <div class="llogo">SOVEREIGN</div>
-    <div class="lsub">TRADING SYSTEM · V7.0 · TESTNET</div>
-    <input id="pwInput" class="linput" type="password" placeholder="••••••••" onkeydown="if(event.key==='Enter')doLogin()">
-    <button class="lbtn" onclick="doLogin()">ENTER →</button>
-    <div class="lerr" id="loginErr">❌ كلمة السر غير صحيحة</div>
-  </div>
-</div>
-
-<!-- ═══ DASHBOARD ════════════════════════════════ -->
-<div id="dash">
-<div class="wrap">
-
-<!-- Header -->
-<div class="hdr">
-  <div class="logo">SOVEREIGN<span>SPOT + FUTURES SYSTEM · V7.0 · TESTNET</span></div>
-  <div class="hdr-r">
-    <span id="stateBadge" class="sbadge s-on">⏳ تحميل</span>
-    <div id="connBadge" class="cbadge off"><div class="dot"></div><span id="connTxt">جاري الاتصال...</span></div>
-  </div>
-</div>
-
-<!-- Ticker -->
-<div class="ticker">
-  <span class="tlive">⚡ LIVE</span>
-  <span id="clock">--:--:--</span>
-  <span class="tsep">|</span>
-  <span>آخر تحديث: <span id="lastUpd" style="color:var(--text)">--</span></span>
-  <span class="tsep">|</span>
-  <span id="calTicker" style="color:var(--orange);display:none"></span>
-  <span class="tsep" id="calSep" style="display:none">|</span>
-  <span>خسارة اليوم: <span id="dlTicker" class="cm">--</span></span>
-</div>
-
-<!-- Tabs -->
-<div class="tabs">
-  <button class="tab active" onclick="goTab('main',this)">🏠 الرئيسية</button>
-  <button class="tab" onclick="goTab('portfolio',this)">💼 المحفظة</button>
-  <button class="tab" onclick="goTab('settings',this)">⚙️ الإعدادات</button>
-  <button class="tab" onclick="goTab('movers',this)">🔥 المتقلبة</button>
-  <button class="tab" onclick="goTab('errors',this)">🗂️ السجلات</button>
-</div>
-
-<!-- ══ TAB: MAIN ════════════════════════════════ -->
-<div id="tab-main" class="panel active">
-
-  <!-- Actions -->
-  <div class="abar">
-    <button class="btn by" id="toggleBtn" onclick="toggleBot()">⏸ إيقاف</button>
-    <button class="btn br" id="eBtn" onclick="emergencyStop()">🚨 طوارئ</button>
-    <button class="btn bg" id="rBtn" style="display:none" onclick="resume()">▶ استئناف</button>
-    <div style="width:1px;height:22px;background:var(--border)"></div>
-    <button class="btn br" onclick="liqSpot()">⚠ تصفية Spot</button>
-    <button class="btn br" onclick="liqFut()">⚠ إغلاق Futures</button>
-    <div style="width:1px;height:22px;background:var(--border)"></div>
-    <button class="btn bo" onclick="openExcel()">📊 Excel</button>
-    <button class="btn bb" onclick="goTab('movers',document.querySelectorAll('.tab')[3]);loadMovers()">🔥 المتقلبة</button>
-  </div>
-
-  <!-- Balance -->
-  <div class="bg2">
-    <!-- Spot -->
-    <div class="bpanel spot">
-      <div class="ptitle">💧 SPOT <span class="ptag stag">Testnet</span></div>
-      <div class="metrics">
-        <div class="metric"><div class="lbl">إجمالي المحفظة</div><div class="val cg" id="sTot">--</div><div class="sub">USDT</div></div>
-        <div class="metric"><div class="lbl">USDT الحر</div><div class="val cb" id="sUsd">--</div><div class="sub">متاح</div></div>
-        <div class="metric"><div class="lbl">PnL</div><div class="val" id="sPnl">--</div><div class="sub" id="sPnlPct">--</div></div>
-      </div>
-      <div class="dlbar-wrap">
-        <div class="dlbar-row"><span>حد الخسارة اليومي</span><span id="dlText" class="cm">--</span></div>
-        <div class="dlbar"><div id="dlFill" class="dlbar-fill" style="width:0%;background:var(--green)"></div></div>
-      </div>
-    </div>
-    <!-- Futures -->
-    <div class="bpanel fut">
-      <div class="ptitle">⚡ FUTURES <span class="ptag ftag">× <span id="levDisp">--</span></span></div>
-      <div class="metrics">
-        <div class="metric"><div class="lbl">الرصيد</div><div class="val cg" id="fTot">--</div><div class="sub">USDT</div></div>
-        <div class="metric"><div class="lbl">مراكز</div><div class="val cp" id="fPos">0</div><div class="sub">مفتوحة</div></div>
-        <div class="metric"><div class="lbl">PnL</div><div class="val" id="fPnl">--</div><div class="sub" id="fPnlPct">--</div></div>
-      </div>
-      <div id="fHoldings" class="fh-wrap"></div>
-    </div>
-  </div>
-
-  <!-- Stats -->
-  <div class="sgrid">
-    <div class="scard"><div class="si">📊</div><div class="sl">إجمالي الصفقات</div><div class="sv cg" id="stTotal">0</div><div class="ss">صفقة منذ البداية</div></div>
-    <div class="scard"><div class="si">🎯</div><div class="sl">Win Rate</div><div class="sv cgr" id="stWR">0%</div><div class="ss" id="stWL">0 ✅ 0 ❌</div></div>
-    <div class="scard"><div class="si">💰</div><div class="sl">صافي الأرباح</div><div class="sv" id="stTotalPnl">0.00$</div><div class="ss">إجمالي الربح/الخسارة</div></div>
-    <div class="scard"><div class="si">🏆</div><div class="sl">أفضل صفقة</div><div class="sv cgr" id="stBest">--</div><div class="ss">ربح محقق</div></div>
-    <div class="scard"><div class="si">📉</div><div class="sl">Max Drawdown</div><div class="sv cr" id="stDD">--</div><div class="ss">أقصى تراجع</div></div>
-  </div>
-
-  <!-- Trades -->
-  <div class="section">
-    <div class="sh">
-      <span class="sh-title">📋 سجل الصفقات</span>
-      <span class="ctag" id="trCount">0 صفقة</span>
-    </div>
-    <div style="overflow-x:auto">
-      <table>
-        <thead><tr>
-          <th>التاريخ</th><th>الوقت</th><th>سوق</th><th>الزوج</th>
-          <th>النوع</th><th>الكمية</th><th>السعر</th>
-          <th>الإجمالي</th><th>PnL $</th><th>PnL %</th><th>السبب</th>
-        </tr></thead>
-        <tbody id="tBody"><tr><td colspan="11"><div class="empty"><span class="empty-i">📡</span>في انتظار الإشارات...</div></td></tr></tbody>
-      </table>
-    </div>
-  </div>
-</div><!-- /tab-main -->
-
-<!-- ══ TAB: PORTFOLIO ═══════════════════════════ -->
-<div id="tab-portfolio" class="panel">
-  <div class="section">
-    <div class="sh">
-      <span class="sh-title">💼 عملاتي الحالية</span>
-      <span class="ctag" id="portCount">0 عملة</span>
-    </div>
-    <div style="overflow-x:auto">
-      <table class="port-table">
-        <thead><tr>
-          <th>العملة</th><th>الكمية</th><th>سعر الشراء</th>
-          <th>السعر الحالي</th><th>القيمة $</th><th>PnL $</th><th>PnL %</th>
-        </tr></thead>
-        <tbody id="portBody"><tr><td colspan="7"><div class="empty"><span class="empty-i">💼</span>لا توجد عملات</div></td></tr></tbody>
-      </table>
-    </div>
-  </div>
-</div>
-
-<!-- ══ TAB: SETTINGS ════════════════════════════ -->
-<div id="tab-settings" class="panel">
-  <div class="sgp">
-    <div class="sgp-title">⚙️ إعدادات النظام الكاملة — كل ميزة قابلة للتفعيل والإلغاء</div>
-    <div class="sgrid2">
-
-      <!-- Spot -->
-      <div class="sgrp">
-        <div class="sgrp-title">💧 Spot</div>
-        <div class="srow"><span class="slabel">وضع الشراء</span>
-          <select class="sinput" id="sBuyMode" onchange="ss('spot_buy_mode',this.value)">
-            <option value="fixed">ثابت $</option>
-            <option value="percent">نسبة %</option>
-          </select>
-        </div>
-        <div class="srow"><span class="slabel">قيمة الشراء</span><input class="ninput" id="sBuyVal" type="number" min="11" onchange="ss('spot_buy_value',+this.value)"></div>
-        <div class="srow"><span class="slabel">نسبة البيع (1=100%)</span><input class="ninput" id="sSellR" type="number" min="0.1" max="1" step="0.1" onchange="ss('spot_sell_ratio',+this.value)"></div>
-      </div>
-
-      <!-- Futures -->
-      <div class="sgrp">
-        <div class="sgrp-title">⚡ Futures</div>
-        <div class="srow"><span class="slabel">تفعيل Futures</span><label class="toggle"><input type="checkbox" id="futEn" onchange="ss('futures_enabled',this.checked)"><span class="tslider"></span></label></div>
-        <div class="srow"><span class="slabel">حجم المركز $</span><input class="ninput" id="fVal" type="number" min="11" onchange="ss('futures_value',+this.value)"></div>
-        <div class="srow"><span class="slabel">الرافعة المالية ×</span><input class="ninput" id="levIn" type="number" min="1" max="125" onchange="ss('leverage',+this.value)"></div>
-      </div>
-
-      <!-- Risk Management -->
-      <div class="sgrp">
-        <div class="sgrp-title">🛡️ Risk Management</div>
-        <div class="srow"><span class="slabel">تفعيل</span><label class="toggle"><input type="checkbox" id="riskEn" onchange="ss('risk_enabled',this.checked)"><span class="tslider"></span></label></div>
-        <div class="srow"><span class="slabel">Trailing Stop %</span><input class="ninput" id="trailPct" type="number" min="0.1" max="20" step="0.1" onchange="ss('trailing_stop_pct',+this.value)"></div>
-        <div class="srow"><span class="slabel">Fixed Stop Loss %</span><input class="ninput" id="fslPct" type="number" min="0.1" max="50" step="0.1" onchange="ss('fixed_stop_loss_pct',+this.value)"></div>
-      </div>
-
-      <!-- Daily Loss Limit -->
-      <div class="sgrp">
-        <div class="sgrp-title">🛡️ حد الخسارة اليومي</div>
-        <div class="srow"><span class="slabel">تفعيل</span><label class="toggle"><input type="checkbox" id="dlEn" onchange="ss('daily_loss_enabled',this.checked)"><span class="tslider"></span></label></div>
-        <div class="srow"><span class="slabel">الحد الأقصى %</span><input class="ninput" id="dlPct" type="number" min="0.5" max="50" step="0.5" onchange="ss('daily_loss_limit_pct',+this.value)"></div>
-      </div>
-
-      <!-- Session Manager -->
-      <div class="sgrp">
-        <div class="sgrp-title">⏰ Session Manager</div>
-        <div class="srow"><span class="slabel">تفعيل</span><label class="toggle"><input type="checkbox" id="sessEn" onchange="ss('session_enabled',this.checked)"><span class="tslider"></span></label></div>
-        <div class="srow"><span class="slabel">بداية الجلسة</span><input class="ninput" id="sessS" type="time" onchange="ss('session_start',this.value)"></div>
-        <div class="srow"><span class="slabel">نهاية الجلسة</span><input class="ninput" id="sessE" type="time" onchange="ss('session_end',this.value)"></div>
-      </div>
-
-      <!-- Economic Calendar -->
-      <div class="sgrp">
-        <div class="sgrp-title">📅 التقويم الاقتصادي</div>
-        <div class="srow"><span class="slabel">تفعيل</span><label class="toggle"><input type="checkbox" id="calEn" onchange="ss('calendar_enabled',this.checked)"><span class="tslider"></span></label></div>
-        <div class="srow"><span class="slabel">إيقاف قبل (دقيقة)</span><input class="ninput" id="calB" type="number" min="5" max="120" onchange="ss('calendar_pause_before',+this.value)"></div>
-        <div class="srow"><span class="slabel">استئناف بعد (دقيقة)</span><input class="ninput" id="calA" type="number" min="5" max="180" onchange="ss('calendar_resume_after',+this.value)"></div>
-      </div>
-
-      <!-- Telegram -->
-      <div class="sgrp">
-        <div class="sgrp-title">📲 Telegram</div>
-        <div class="srow"><span class="slabel">تفعيل الإشعارات</span><label class="toggle"><input type="checkbox" id="tgEn" onchange="ss('telegram_enabled',this.checked)"><span class="tslider"></span></label></div>
-        <div class="srow"><span class="slabel">إشعار عند كل صفقة</span><label class="toggle"><input type="checkbox" id="tgTrade" onchange="ss('telegram_on_trade',this.checked)"><span class="tslider"></span></label></div>
-        <div class="srow"><span class="slabel">إشعار عند الأخطاء</span><label class="toggle"><input type="checkbox" id="tgErr" onchange="ss('telegram_on_error',this.checked)"><span class="tslider"></span></label></div>
-        <div class="srow"><span class="slabel">تقرير يومي</span><label class="toggle"><input type="checkbox" id="tgRep" onchange="ss('telegram_daily_report',this.checked)"><span class="tslider"></span></label></div>
-        <div class="srow"><span class="slabel">وقت التقرير</span><input class="ninput" id="tgTime" type="time" onchange="ss('telegram_report_time',this.value)"></div>
-      </div>
-
-    </div>
-  </div>
-</div>
-
-<!-- ══ TAB: MOVERS ══════════════════════════════ -->
-<div id="tab-movers" class="panel">
-  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-    <span style="font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:2px">🔥 أكثر العملات تقلباً — 24 ساعة</span>
-    <button class="btn bb" onclick="loadMovers()">🔄 تحديث</button>
-  </div>
-  <div class="mgrid" id="moversGrid">
-    <div class="empty" style="grid-column:1/-1"><span class="empty-i">🔥</span>اضغط تحديث</div>
-  </div>
-</div>
-
-<!-- ══ TAB: ERRORS ══════════════════════════════ -->
-<div id="tab-errors" class="panel">
-  <div class="section">
-    <div class="sh">
-      <span class="sh-title">🗂️ سجل الأخطاء</span>
-      <button class="btn bx" onclick="clearErr()" style="font-size:10px;padding:4px 10px">مسح الكل</button>
-    </div>
-    <div id="errList"><div class="empty"><span class="empty-i">✅</span>لا توجد أخطاء</div></div>
-  </div>
-</div>
-
-</div><!-- /wrap -->
-</div><!-- /dash -->
-
-<!-- ══ MODAL: EXCEL ════════════════════════════ -->
-<div id="excelModal" class="modal">
-  <div class="mbox" style="max-width:360px;text-align:center">
-    <button class="mclose" onclick="closeModal('excelModal')">✕</button>
-    <div class="mtitle">📊 تصدير Excel</div>
-    <p style="color:var(--text2);font-size:13px;font-family:var(--ar);margin-bottom:20px;line-height:1.6">سيتم تحميل ملف Excel كامل بجميع بيانات الصفقات مع التواريخ والأسعار والأرباح والخسائر</p>
-    <button class="btn bo" style="width:100%;justify-content:center;font-size:13px;padding:12px" onclick="doExport()">⬇ تحميل الملف</button>
-  </div>
-</div>
-
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script>
-// ══════════════════════════
-// LOGIN
-// ══════════════════════════
-function doLogin(){
-  const pw=document.getElementById('pwInput').value.trim();
-  if(!pw) return;
-  fetch('/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})})
-    .then(r=>r.json()).then(d=>{
-      if(d.ok){
-        sessionStorage.setItem('sv7','1');
-        showDash();
-      } else {
-        const err=document.getElementById('loginErr');
-        err.style.display='block';
-        document.getElementById('pwInput').value='';
-        setTimeout(()=>err.style.display='none',3000);
-      }
-    }).catch(()=>{showDash();}); // dev fallback
-}
-
-function showDash(){
-  document.getElementById('loginPage').style.display='none';
-  document.getElementById('dash').style.display='block';
-  connect();
-}
-
-if(sessionStorage.getItem('sv7')==='1') showDash();
-
-// ══════════════════════════
-// WEBSOCKET
-// ══════════════════════════
-let wsDelay=2000, seenIds=new Set(), lastData=null;
-
-function connect(){
-  const proto=location.protocol==='https:'?'wss:':'ws:';
-  const ws=new WebSocket(proto+'//'+location.host+'/ws');
-  ws.onopen=()=>{
-    document.getElementById('connBadge').className='cbadge on';
-    document.getElementById('connTxt').textContent='متصل · LIVE';
-    wsDelay=2000;
-  };
-  ws.onmessage=e=>{lastData=JSON.parse(e.data);render(lastData);};
-  ws.onclose=()=>{
-    document.getElementById('connBadge').className='cbadge off';
-    document.getElementById('connTxt').textContent='انقطع الاتصال...';
-    setTimeout(connect,wsDelay);
-    wsDelay=Math.min(wsDelay*1.5,30000);
-  };
-  ws.onerror=()=>ws.close();
-}
-
-// ══════════════════════════
-// HELPERS
-// ══════════════════════════
-function fmt(n,d=2){return Number(n||0).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d});}
-function pc(v){return v>0?'pp':v<0?'pn':'pz';}
-function sg(v){return v>0?'+':'';}
-function pnlHtml(v,pct){
-  if(v===0&&pct===0) return '<span class="pz">—</span>';
-  const c=pc(v);
-  const pctHtml=pct!==undefined?` <span style="font-size:10px">(${sg(pct)}${pct}%)</span>`:'';
-  return `<span class="${c}">${sg(v)}${fmt(v)}$${pctHtml}</span>`;
-}
-
-// ══════════════════════════
-// RENDER
-// ══════════════════════════
-function render(d){
-  const now=new Date();
-  document.getElementById('clock').textContent=now.toLocaleTimeString('ar-SA');
-  document.getElementById('lastUpd').textContent=now.toLocaleTimeString('ar-SA');
-
-  const s=d.settings||{};
-  syncSettings(s);
-  renderStateBadge(s);
-
-  // Spot
-  const sp=d.spot||{};
-  document.getElementById('sTot').textContent=fmt(sp.total);
-  document.getElementById('sUsd').textContent=fmt(sp.usdt);
-  const spPnl=sp.pnl||0, spPct=sp.pnl_pct||0;
-  const spEl=document.getElementById('sPnl');
-  spEl.textContent=sg(spPnl)+fmt(spPnl)+'$';
-  spEl.className='val '+pc(spPnl);
-  document.getElementById('sPnlPct').textContent=sg(spPnl)+spPct+'%';
-
-  // Daily Loss Bar
-  const dl=d.daily_loss||{};
-  const cur=Math.abs(dl.current||0), lim=dl.limit||1;
-  const dlPct=Math.min((cur/lim)*100,100);
-  document.getElementById('dlText').textContent=`${fmt(cur)}$ / ${fmt(lim)}$`;
-  document.getElementById('dlTicker').textContent=`${fmt(cur)}$ / ${fmt(lim)}$`;
-  const fill=document.getElementById('dlFill');
-  fill.style.width=dlPct+'%';
-  fill.style.background=dlPct>80?'var(--red)':dlPct>50?'var(--orange)':'var(--green)';
-
-  // Futures
-  const fp=d.futures||{};
-  document.getElementById('fTot').textContent=fmt(fp.total);
-  document.getElementById('fPos').textContent=Object.keys(fp.holdings||{}).length;
-  const fpPnl=fp.pnl||0;
-  const fpEl=document.getElementById('fPnl');
-  fpEl.textContent=sg(fpPnl)+fmt(fpPnl)+'$';
-  fpEl.className='val '+pc(fpPnl);
-  document.getElementById('fPnlPct').textContent=sg(fpPnl)+(fp.pnl_pct||0)+'%';
-  document.getElementById('levDisp').textContent=(s.leverage||'--')+'x';
-
-  // Futures Positions
-  const fh=fp.holdings||{};
-  const fhEl=document.getElementById('fHoldings');
-  if(Object.keys(fh).length){
-    fhEl.innerHTML=`<div class="fh-title">مراكز مفتوحة</div>
-      <table class="fh-table">
-        <thead><tr><th>الزوج</th><th>الجانب</th><th>دخول</th><th>الحالي</th><th>PnL $</th><th>PnL %</th></tr></thead>
-        <tbody>${Object.entries(fh).map(([sym,p])=>`
-          <tr>
-            <td style="font-weight:700">${sym}</td>
-            <td><span class="badge ${p.side==='long'?'blong':'bshort'}">${p.side==='long'?'LONG':'SHORT'}</span></td>
-            <td>${fmt(p.entry_price,4)}</td>
-            <td style="color:var(--blue)">${fmt(p.current_price,4)}</td>
-            <td class="${pc(p.unrealized_pnl)}">${sg(p.unrealized_pnl)}${fmt(p.unrealized_pnl)}$</td>
-            <td class="${pc(p.pnl_pct)}">${sg(p.pnl_pct)}${p.pnl_pct}%</td>
-          </tr>`).join('')}</tbody>
-      </table>`;
-  } else {
-    fhEl.innerHTML='';
-  }
-
-  // Calendar Ticker
-  const calEv=s.calendar_next_event||'';
-  const calT=document.getElementById('calTicker');
-  const calSep=document.getElementById('calSep');
-  if(calEv && s.calendar_enabled){
-    calT.textContent=`${calEv} — ${s.calendar_next_event_time}`;
-    calT.style.display='';calSep.style.display='';
-  } else {
-    calT.style.display='none';calSep.style.display='none';
-  }
-
-  // Stats
-  const st=d.stats||{};
-  document.getElementById('stTotal').textContent=st.total||0;
-  document.getElementById('stWR').textContent=(st.win_rate||0)+'%';
-  document.getElementById('stWL').textContent=`${st.wins||0} ✅  ${st.losses||0} ❌`;
-  const best=document.getElementById('stBest');
-  best.textContent=(st.best_trade>0?'+':'')+fmt(st.best_trade||0)+'$';
-  best.className='sv '+pc(st.best_trade||0);
-  document.getElementById('stDD').textContent='-'+fmt(st.max_drawdown||0)+'$';
-  document.getElementById('trCount').textContent=(st.total||0)+' صفقة';
-  // صافي الأرباح الكلي
-  const totalPnlEl=document.getElementById('stTotalPnl');
-  if(totalPnlEl){
-    const tp=st.total_pnl||0;
-    totalPnlEl.textContent=(tp>=0?'+':'')+fmt(tp,2)+'$';
-    totalPnlEl.className='sv '+(tp>=0?'cg':'cr');
-  }
-  // Win Rate لون ديناميكي
-  const wrEl=document.getElementById('stWR');
-  if(wrEl){
-    const wr=st.win_rate||0;
-    wrEl.style.color=wr>=50?'var(--green)':wr>=30?'var(--gold)':'var(--red)';
-  }
-
-  // Portfolio
-  renderPortfolio(sp.holdings||{});
-  // Trades
-  renderTrades(d.trades||[]);
-  // Errors
-  renderErrors(d.errors||[]);
-}
-
-// ── Portfolio ─────────────────────────────
-function renderPortfolio(h){
-  const keys=Object.keys(h);
-  document.getElementById('portCount').textContent=keys.length+' عملة';
-  if(!keys.length){
-    document.getElementById('portBody').innerHTML='<tr><td colspan="7"><div class="empty"><span class="empty-i">💼</span>لا توجد عملات محتفظ بها</div></td></tr>';
-    return;
-  }
-  // ترتيب: العملات ذات القيمة الأعلى أولاً
-  const sorted=keys.sort((a,b)=>(h[b].value||0)-(h[a].value||0));
-  document.getElementById('portBody').innerHTML=sorted.map(c=>{
-    const v=h[c];
-    const hasPos = v.amount > 0;
-    const rowStyle = hasPos ? 'background:rgba(0,255,150,0.04);' : 'opacity:0.5;';
-    const pnlColor = v.pnl_usd >= 0 ? 'var(--green)' : 'var(--red)';
-    return `<tr style="${rowStyle}">
-      <td><span style="color:var(--gold);font-weight:700">${c}</span>${hasPos?'<span style="color:var(--green);font-size:10px;margin-right:4px">●</span>':''}</td>
-      <td>${v.amount}</td>
-      <td>${fmt(v.buy_price,4)}</td>
-      <td style="color:var(--blue)">${fmt(v.current_price,4)}</td>
-      <td style="color:var(--gold)">${fmt(v.value,2)}$</td>
-      <td style="color:${pnlColor};font-weight:600">${sg(v.pnl_usd)}${fmt(v.pnl_usd,2)}$</td>
-      <td style="color:${pnlColor};font-weight:600">${sg(v.pnl_pct)}${v.pnl_pct}%</td>
-    </tr>`;
-  }).join('');
-}
-
-// ── Trades ────────────────────────────────
-const badgeMap={
-  buy:'<span class="badge bbuy">شراء</span>',
-  sell:'<span class="badge bsell">بيع</span>',
-  long_open:'<span class="badge blong">LONG ▲</span>',
-  long_close:'<span class="badge blclose">↓ Long</span>',
-  short_open:'<span class="badge bshort">SHORT ▼</span>',
-  short_close:'<span class="badge bsclose">↑ Short</span>',
-};
-const reasonMap={stop_loss:'🛑 SL',peak_exit:'🎯 Peak',trailing_stop:'📉 Trail'};
-
-function renderTrades(trades){
-  if(!trades.length){
-    document.getElementById('tBody').innerHTML='<tr><td colspan="11"><div class="empty"><span class="empty-i">📡</span>في انتظار الإشارات...</div></td></tr>';
-    return;
-  }
-  document.getElementById('tBody').innerHTML=trades.map(x=>{
-    const isNew=!seenIds.has(x.id); if(isNew) seenIds.add(x.id);
-    const mkt=x.market==='FUTURES'?'<span class="mkt-f">F</span>':'<span class="mkt-s">S</span>';
-    const badge=badgeMap[x.act]||`<span class="badge bsell">${x.act}</span>`;
-    const isSell=['sell','long_close','short_close'].includes(x.act);
-    const pnlUsd=isSell&&x.pnl!==0?`<span class="${pc(x.pnl)}">${sg(x.pnl)}${fmt(x.pnl,2)}$</span>`:'<span class="pz">—</span>';
-    let pnlPct='<span class="pz">—</span>';
-    if(isSell&&x.pnl!==0&&x.total>0){
-      const cost=(x.total||0)-(x.pnl||0);
-      if(cost>0){const pp=(x.pnl/cost)*100;pnlPct=`<span class="${pc(pp)}">${sg(pp)}${fmt(pp,2)}%</span>`;}
-    }
-    return `<tr class="${isNew?'flash':''}">
-      <td class="tmuted">${x.date||'--'}</td>
-      <td class="tmuted">${x.time}</td>
-      <td>${mkt}</td>
-      <td class="tpair">${x.pair}</td>
-      <td>${badge}</td>
-      <td class="tm">${x.amount>0?x.amount:'—'}</td>
-      <td class="tprice">${x.price>0?fmt(x.price,4):'—'}</td>
-      <td class="tm cg">${x.total>0?fmt(x.total,2)+'$':'—'}</td>
-      <td>${pnlUsd}</td>
-      <td>${pnlPct}</td>
-      <td class="tmuted">${reasonMap[x.reason]||'—'}</td>
-    </tr>`;
-  }).join('');
-}
-
-// ── Errors ────────────────────────────────
-function renderErrors(errs){
-  const el=document.getElementById('errList');
-  if(!errs.length){el.innerHTML='<div class="empty"><span class="empty-i">✅</span>لا توجد أخطاء</div>';return;}
-  el.innerHTML=errs.map(e=>`<div class="eitem"><span class="etime">${e.date} ${e.time}</span><span class="emsg">❌ ${e.msg}</span></div>`).join('');
-}
-
-// ── State Badge ───────────────────────────
-function renderStateBadge(s){
-  const b=document.getElementById('stateBadge');
-  const tBtn=document.getElementById('toggleBtn');
-  const eBtn=document.getElementById('eBtn');
-  const rBtn=document.getElementById('rBtn');
-  if(s.emergency_stop){
-    b.textContent='🚨 طوارئ';b.className='sbadge s-emer';
-    tBtn.style.display='none';eBtn.style.display='none';rBtn.style.display='inline-flex';
-  } else if(s.calendar_paused){
-    b.textContent='📅 إيقاف — حدث اقتصادي';b.className='sbadge s-cal';
-    tBtn.textContent='⏸ مؤقف';tBtn.className='btn bx';
-    tBtn.style.display='inline-flex';eBtn.style.display='inline-flex';rBtn.style.display='none';
-  } else if(!s.active){
-    b.textContent='⏸ متوقف';b.className='sbadge s-pause';
-    tBtn.textContent='▶ تشغيل';tBtn.className='btn bg';
-    tBtn.style.display='inline-flex';eBtn.style.display='inline-flex';rBtn.style.display='none';
-  } else {
-    b.textContent='✅ نشط';b.className='sbadge s-on';
-    tBtn.textContent='⏸ إيقاف';tBtn.className='btn by';
-    tBtn.style.display='inline-flex';eBtn.style.display='inline-flex';rBtn.style.display='none';
-  }
-}
-
-// ══════════════════════════
-// SETTINGS SYNC
-// ══════════════════════════
-function syncSettings(s){
-  const set=(id,v)=>{const el=document.getElementById(id);if(!el)return;el.type==='checkbox'?el.checked=!!v:el.value=v;};
-  set('sBuyMode',s.spot_buy_mode);set('sBuyVal',s.spot_buy_value);set('sSellR',s.spot_sell_ratio);
-  set('futEn',s.futures_enabled);set('fVal',s.futures_value);set('levIn',s.leverage);
-  set('riskEn',s.risk_enabled);set('trailPct',s.trailing_stop_pct);set('fslPct',s.fixed_stop_loss_pct);
-  set('dlEn',s.daily_loss_enabled);set('dlPct',s.daily_loss_limit_pct);
-  set('sessEn',s.session_enabled);set('sessS',s.session_start);set('sessE',s.session_end);
-  set('calEn',s.calendar_enabled);set('calB',s.calendar_pause_before);set('calA',s.calendar_resume_after);
-  set('tgEn',s.telegram_enabled);set('tgTrade',s.telegram_on_trade);
-  set('tgErr',s.telegram_on_error);set('tgRep',s.telegram_daily_report);set('tgTime',s.telegram_report_time);
-}
-
-// ══════════════════════════
-// CONTROLS
-// ══════════════════════════
-async function api(url,body){
-  const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});
-  return r.json();
-}
-async function toggleBot(){await api('/control/toggle');}
-async function emergencyStop(){
-  if(!confirm('🚨 إيقاف الطوارئ!\nسيوقف البوت ويبيع جميع المراكز فوراً.\n\nمتأكد؟'))return;
-  await api('/control/emergency');
-}
-async function resume(){await api('/control/resume');}
-async function liqSpot(){if(!confirm('تصفية جميع مراكز Spot؟'))return;await api('/liquidate');}
-async function liqFut(){if(!confirm('إغلاق جميع مراكز Futures؟'))return;await api('/liquidate/futures');}
-async function clearErr(){await api('/errors/clear');}
-async function ss(key,val){await api('/settings/update',{key,value:val});}
-
-// ══════════════════════════
-// TABS
-// ══════════════════════════
-function goTab(name,btn){
-  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
-  document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
-  if(btn) btn.classList.add('active');
-  const p=document.getElementById('tab-'+name);
-  if(p) p.classList.add('active');
-  if(name==='movers') loadMovers();
-}
-
-// ══════════════════════════
-// MOVERS
-// ══════════════════════════
-async function loadMovers(){
-  document.getElementById('moversGrid').innerHTML='<div class="empty" style="grid-column:1/-1"><span class="empty-i" style="opacity:.5">⏳</span>جاري التحميل...</div>';
-  const data=await fetch('/movers').then(r=>r.json()).catch(()=>[]);
-  if(!data.length){
-    document.getElementById('moversGrid').innerHTML='<div class="empty" style="grid-column:1/-1"><span class="empty-i">⚠️</span>لا توجد بيانات</div>';
-    return;
-  }
-  document.getElementById('moversGrid').innerHTML=data.map(m=>`
-    <div class="mcard">
-      <div class="msym">${m.symbol}</div>
-      <div class="mpct ${m.change_pct>=0?'cgr':'cr'}">${m.change_pct>=0?'+':''}${m.change_pct}%</div>
-      <div class="mvol">${fmt(m.price,4)} USDT</div>
-      <div class="mvol">${m.volume_m}M Vol</div>
-    </div>`).join('');
-}
-
-// ══════════════════════════
-// EXCEL
-// ══════════════════════════
-function openExcel(){document.getElementById('excelModal').classList.add('open');}
-function closeModal(id){document.getElementById(id).classList.remove('open');}
-
-function doExport(){
-  if(!lastData?.trades?.length){alert('لا توجد صفقات للتصدير');return;}
-  const rows=lastData.trades.map(t=>({
-    'التاريخ':          t.date||'',
-    'الوقت':            t.time||'',
-    'السوق':            t.market||'',
-    'الزوج':            t.pair||'',
-    'نوع الأمر':        t.act||'',
-    'الكمية':           t.amount||0,
-    'سعر التنفيذ':      t.price||0,
-    'الإجمالي $':       t.total||0,
-    'PnL $':            t.pnl||0,
-    'السبب':            t.reason||'',
-    'الحالة':           t.success?'ناجح':'فاشل',
-    'التفاصيل':         t.st||'',
-  }));
-  const ws=XLSX.utils.json_to_sheet(rows);
-  // تنسيق عرض الأعمدة
-  ws['!cols']=[{wch:12},{wch:10},{wch:8},{wch:12},{wch:12},{wch:10},{wch:12},{wch:10},{wch:10},{wch:14},{wch:8},{wch:40}];
-  const wb=XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb,'Trades',ws);
-  const d=new Date().toLocaleDateString('en-GB').replace(/\//g,'-');
-  XLSX.writeFile(wb,`SOVEREIGN_V7_Trades_${d}.xlsx`);
-  closeModal('excelModal');
-}
-
-// Clock
-setInterval(()=>{const e=document.getElementById('clock');if(e)e.textContent=new Date().toLocaleTimeString('ar-SA');},1000);
-</script>
-</body>
-</html>"""
 
 
 # ══════════════════════════════════════════
@@ -1645,7 +778,7 @@ class Signal(BaseModel):
     direction: str
     reason:    Optional[str] = None
     market:    Optional[str] = None
-    model_config = {"extra": "ignore"}
+    model_config = {"extra":"ignore"}
 
 class AuthReq(BaseModel):
     password: str
@@ -1662,125 +795,95 @@ class SettingReq(BaseModel):
 async def root():
     return HTML
 
-
 @app.post("/auth/login")
-async def auth_login(req: AuthReq):
-    return {"ok": req.password == DASHBOARD_PASSWORD}
-
+async def auth_login(req: AuthReq, request: Request):
+    ok  = req.password == DASHBOARD_PASSWORD
+    ip  = request.client.host if request.client else "unknown"
+    ua  = request.headers.get("user-agent","")[:80]
+    login_logs.appendleft({
+        "time":    datetime.now().strftime("%H:%M:%S"),
+        "date":    datetime.now().strftime("%d/%m/%Y"),
+        "ip":      ip,
+        "status":  "✅ Success" if ok else "❌ Failed",
+        "ua":      ua,
+    })
+    if not ok:
+        log_error(f"Failed login from {ip}", notify=False)
+    return {"ok": ok}
 
 @app.websocket("/ws")
 async def ws_handler(ws: WebSocket):
     await ws.accept()
     active_connections.append(ws)
-    print(f"🔌 +1 | total={len(active_connections)}")
     try:
         await ws.send_json(await get_full_state())
         while True:
             await asyncio.sleep(5)
             await ws.send_json(await get_full_state())
-    except WebSocketDisconnect:
-        pass
-    except Exception:
+    except (WebSocketDisconnect, Exception):
         pass
     finally:
         if ws in active_connections:
             active_connections.remove(ws)
-        print(f"🔌 -1 | total={len(active_connections)}")
-
 
 @app.post("/webhook")
 async def webhook(request: Request):
-    # ── قراءة الرسالة (JSON أو نص بسيط) ───
-    raw = await request.body()
+    raw     = await request.body()
     raw_str = raw.decode("utf-8").strip()
-    print(f"📨 Raw webhook: {raw_str[:200]}")
-
-    # ── تفكيك الرسالة ──────────────────────
+    print(f"📨 Webhook: {raw_str[:200]}")
     pair = direction = reason = market = ""
     try:
-        # محاولة JSON أولاً
-        data = json.loads(raw_str)
-        pair      = str(data.get("pair", "")).upper().strip()
-        direction = str(data.get("direction", "")).lower().strip()
-        reason    = str(data.get("reason", ""))
-        market    = str(data.get("market", "spot")).lower()
-    except Exception:
-        # نص بسيط: SOLUSDT|buy|spot|peak_exit
-        parts = [p.strip() for p in raw_str.replace(",","|").split("|")]
+        data      = json.loads(raw_str)
+        pair      = str(data.get("pair","")).upper().strip()
+        direction = str(data.get("direction","")).lower().strip()
+        reason    = str(data.get("reason",""))
+        market    = str(data.get("market","spot")).lower()
+    except:
+        parts     = [p.strip() for p in raw_str.replace(",","|").split("|")]
         if len(parts) >= 2:
             pair      = parts[0].upper()
             direction = parts[1].lower()
             market    = parts[2].lower() if len(parts) > 2 else "spot"
             reason    = parts[3] if len(parts) > 3 else ""
         else:
-            return JSONResponse({"status":"error","msg":"رسالة غير مفهومة","raw":raw_str}, status_code=422)
-
-    # ── تنظيف اسم الزوج ───────────────────
-    pair = pair.replace("BINANCE:","").replace("BYBIT:","").replace("OKX:","")
+            return JSONResponse({"status":"error","msg":"invalid format","raw":raw_str},status_code=422)
+    for prefix in ("BINANCE:","BYBIT:","OKX:"):
+        pair = pair.replace(prefix,"")
     pair = pair.replace(".P","").replace("-PERP","").replace("_PERP","")
     if ":" in pair: pair = pair.split(":")[1]
     if not pair or not direction:
-        return JSONResponse({"status":"error","msg":"pair أو direction مفقود"}, status_code=422)
-
+        return JSONResponse({"status":"error","msg":"missing pair or direction"},status_code=422)
     s = Signal(pair=pair, direction=direction, reason=reason, market=market)
-    print(f"✅ Parsed: pair={s.pair} | direction={s.direction} | market={s.market} | reason={s.reason}")
-
-    # ── فحوصات الأمان ─────────────────────
-    if settings.get("emergency_stop"):
-        return {"status":"emergency_stop","ok":False}
-
-    if not settings.get("active"):
-        return {"status":"inactive","ok":False}
-
+    if settings.get("emergency_stop"):  return {"status":"emergency_stop","ok":False}
+    if not settings.get("active"):      return {"status":"inactive","ok":False}
     ok_sess, sess_msg = is_session_active()
-    if not ok_sess:
-        return {"status":"outside_session","message":sess_msg,"ok":False}
-
+    if not ok_sess: return {"status":"outside_session","message":sess_msg,"ok":False}
     ok_cal, cal_msg = is_calendar_paused()
-    if ok_cal:
-        return {"status":"calendar_paused","event":cal_msg,"ok":False}
-
-    # ── توجيه الأمر ───────────────────────
-    direction = s.direction.lower().strip()
-    reason    = s.reason or ""
-    market    = (s.market or "spot").lower()
-
-    if direction in ("long_open","long_close","short_open","short_close"):
-        market = "futures"
-
-    if market == "futures":
-        if not settings.get("futures_enabled"):
-            return {"status":"futures_disabled","ok":False}
-
-    # رد فوري على TradingView لتجنب timeout
-    async def execute_in_background():
-        if market == "futures":
-            result = futures_bot.execute(s.pair, direction, reason)
-        else:
-            result = spot_bot.execute(s.pair, direction, reason)
+    if ok_cal: return {"status":"calendar_paused","event":cal_msg,"ok":False}
+    if direction in ("long_open","long_close","short_open","short_close"): market = "futures"
+    if market == "futures" and not settings.get("futures_enabled"):
+        return {"status":"futures_disabled","ok":False}
+    async def execute_bg():
+        result = futures_bot.execute(s.pair,direction,reason) if market=="futures" else spot_bot.execute(s.pair,direction,reason)
         await broadcast(await get_full_state())
         print(f"✅ Executed: {result}")
-
-    asyncio.create_task(execute_in_background())
-    return {"status": "received", "ok": True}
-
+    asyncio.create_task(execute_bg())
+    return {"status":"received","ok":True}
 
 @app.post("/settings/update")
 async def update_setting(req: SettingReq):
     if req.key in settings:
         settings[req.key] = req.value
-        print(f"⚙️ {req.key} ← {req.value}")
     await broadcast(await get_full_state())
-    return {"ok": True}
-
+    return {"ok":True}
 
 @app.post("/control/toggle")
 async def ctrl_toggle():
     if not settings.get("emergency_stop"):
         settings["active"] = not settings["active"]
+        add_toast("✅ Bot activated" if settings["active"] else "⏸ Bot paused","info")
     await broadcast(await get_full_state())
-    return {"active": settings["active"]}
-
+    return {"active":settings["active"]}
 
 @app.post("/control/emergency")
 async def ctrl_emergency():
@@ -1788,110 +891,1540 @@ async def ctrl_emergency():
     settings["active"]         = False
     spot_bot.liquidate_all()
     futures_bot.close_all()
-    await send_telegram("🚨 <b>إيقاف طوارئ</b>\nتم تصفية جميع المراكز فوراً.")
+    add_toast("🚨 EMERGENCY STOP — All positions closed!","error")
+    await send_telegram("🚨 <b>Emergency Stop</b>\nAll positions liquidated.")
     await broadcast(await get_full_state())
-    return {"ok": True}
-
+    return {"ok":True}
 
 @app.post("/control/resume")
 async def ctrl_resume():
     settings["emergency_stop"] = False
     settings["active"]         = True
-    await send_telegram("▶️ <b>استئناف التداول</b>")
+    add_toast("▶️ Bot resumed","success")
+    await send_telegram("▶️ <b>Trading Resumed</b>")
     await broadcast(await get_full_state())
-    return {"ok": True}
-
+    return {"ok":True}
 
 @app.post("/liquidate")
 async def liquidate():
     spot_bot.liquidate_all()
     await broadcast(await get_full_state())
-    return {"ok": True}
-
+    return {"ok":True}
 
 @app.post("/liquidate/futures")
 async def liquidate_futures():
     futures_bot.close_all()
     await broadcast(await get_full_state())
-    return {"ok": True}
-
+    return {"ok":True}
 
 @app.post("/errors/clear")
 async def clear_errors():
     error_logs.clear()
     await broadcast(await get_full_state())
-    return {"ok": True}
-
+    return {"ok":True}
 
 @app.get("/movers")
-async def movers_endpoint():
+async def movers():
     return await get_top_movers()
-
-
-@app.get("/portfolio")
-async def portfolio_endpoint():
-    return await get_full_state()
-
 
 @app.get("/health")
 async def health():
-    return {
-        "status":         "ok",
-        "version":        "7.0.0",
-        "active":         settings["active"],
-        "emergency_stop": settings["emergency_stop"],
-        "spot_trades":    len(spot_bot.trades),
-        "futures_trades": len(futures_bot.trades),
-        "connections":    len(active_connections),
-        "leverage":       settings["leverage"],
-    }
+    return {"status":"ok","version":"8.0.0","active":settings["active"],"emergency":settings["emergency_stop"],"connections":len(active_connections)}
 
 
 # ══════════════════════════════════════════
-# Background Tasks
+# Background
 # ══════════════════════════════════════════
 @app.on_event("startup")
 async def on_startup():
     asyncio.create_task(background_loop())
-
 
 async def background_loop():
     last_report_date = ""
     while True:
         try:
             await asyncio.sleep(60)
-
-            # ── التقويم الاقتصادي ──────────
             if settings.get("calendar_enabled"):
                 await fetch_economic_calendar()
-
-            # ── التقرير اليومي Telegram ────
-            if (settings.get("telegram_daily_report")
-                    and settings.get("telegram_enabled")):
-                now_str  = datetime.now().strftime("%H:%M")
+            if settings.get("telegram_daily_report") and settings.get("telegram_enabled"):
+                now_str   = datetime.now().strftime("%H:%M")
                 today_str = datetime.now().strftime("%Y-%m-%d")
                 if now_str == settings.get("telegram_report_time","00:00") and last_report_date != today_str:
                     last_report_date = today_str
-                    st  = spot_bot.performance_stats()
-                    bal = await spot_bot.get_balance()
-                    sign = "+" if st['total_pnl'] >= 0 else ""
+                    all_t = list(spot_bot.trades) + list(futures_bot.trades)
+                    st    = calc_advanced_stats(all_t)
+                    bal   = await spot_bot.get_balance()
+                    sign  = "+" if st["total_pnl"] >= 0 else ""
                     await send_telegram(
-                        f"📊 <b>التقرير اليومي — {datetime.now().strftime('%d/%m/%Y')}</b>\n"
-                        f"━━━━━━━━━━━━━━━━━━━\n"
-                        f"الصفقات:  {st['total']} | ✅ {st['wins']} | ❌ {st['losses']}\n"
+                        f"📊 <b>Daily Report — {datetime.now().strftime('%d/%m/%Y')}</b>\n"
+                        f"━━━━━━━━━━━━━━━━━\n"
+                        f"Trades: {st['total']} | ✅ {st['wins']} | ❌ {st['losses']}\n"
                         f"Win Rate: {st['win_rate']}%\n"
-                        f"PnL اليوم: {sign}{st['total_pnl']:.2f}$\n"
-                        f"Max DD:   -{st['max_drawdown']:.2f}$\n"
-                        f"المحفظة:  {bal['total']:,.2f}$\n"
-                        f"━━━━━━━━━━━━━━━━━━━"
+                        f"Profit Factor: {st['profit_factor']}\n"
+                        f"Sharpe: {st['sharpe']}\n"
+                        f"PnL: {sign}{st['total_pnl']:.2f}$\n"
+                        f"Max DD: -{st['max_drawdown']:.2f}$\n"
+                        f"Portfolio: {bal['total']:,.2f}$\n"
+                        f"━━━━━━━━━━━━━━━━━"
                     )
         except Exception as e:
             print(f"⚠️ Background: {e}")
 
 
 # ══════════════════════════════════════════
-# Entry Point
+# HTML — SOVEREIGN V8.0
+# Binance-style Dark UI | English
 # ══════════════════════════════════════════
+HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>SOVEREIGN V8 · Trading Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+/* ═══════════════════════════════════════════
+   SOVEREIGN V8 — Binance Dark Theme
+   ═══════════════════════════════════════════ */
+:root {
+  /* Binance Palette */
+  --bg0:     #0b0e11;
+  --bg1:     #12161c;
+  --bg2:     #1e2329;
+  --bg3:     #2b3139;
+  --border:  rgba(255,255,255,.07);
+  --border2: rgba(255,255,255,.04);
+
+  /* Accent */
+  --gold:    #f0b90b;
+  --gold2:   #f8d12f;
+  --gold-bg: rgba(240,185,11,.08);
+  --gold-br: rgba(240,185,11,.18);
+
+  /* Status */
+  --green:   #0ecb81;
+  --green-bg:rgba(14,203,129,.08);
+  --green-br:rgba(14,203,129,.18);
+  --red:     #f6465d;
+  --red-bg:  rgba(246,70,93,.08);
+  --red-br:  rgba(246,70,93,.18);
+  --blue:    #1890ff;
+  --blue-bg: rgba(24,144,255,.08);
+  --blue-br: rgba(24,144,255,.18);
+  --purple:  #7b61ff;
+  --purp-bg: rgba(123,97,255,.08);
+  --purp-br: rgba(123,97,255,.18);
+  --orange:  #f37b24;
+  --oran-bg: rgba(243,123,36,.08);
+  --oran-br: rgba(243,123,36,.18);
+
+  /* Text */
+  --t1:  #eaecef;
+  --t2:  #848e9c;
+  --t3:  #474d57;
+  --t4:  #2b3139;
+
+  --mono: 'IBM Plex Mono', monospace;
+  --sans: 'Inter', sans-serif;
+  --r:   8px;
+  --r2:  5px;
+  --r3:  12px;
+}
+
+*      { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent }
+html   { scroll-behavior:smooth }
+body   { background:var(--bg0); color:var(--t1); font-family:var(--sans); min-height:100vh; overflow-x:hidden; font-size:14px }
+a      { color:inherit; text-decoration:none }
+button { cursor:pointer; border:none; background:none; font-family:inherit }
+input, select { font-family:inherit; color:var(--t1) }
+
+/* ─── Scrollbar ─── */
+::-webkit-scrollbar { width:4px; height:4px }
+::-webkit-scrollbar-track { background:var(--bg0) }
+::-webkit-scrollbar-thumb { background:var(--bg3); border-radius:2px }
+
+/* ═══════════════ LOGIN ═══════════════ */
+#loginPage {
+  position:fixed; inset:0; background:var(--bg0);
+  z-index:1000; display:flex; align-items:center; justify-content:center;
+}
+.login-box {
+  background:var(--bg1); border:1px solid var(--gold-br);
+  border-radius:16px; padding:48px 40px; width:380px; text-align:center;
+  position:relative;
+  box-shadow: 0 0 60px rgba(240,185,11,.06);
+}
+.login-logo {
+  font-family:var(--mono); font-size:22px; font-weight:700;
+  color:var(--gold); letter-spacing:4px; margin-bottom:4px;
+}
+.login-sub {
+  font-family:var(--mono); font-size:9px; color:var(--t3);
+  letter-spacing:3px; margin-bottom:36px;
+}
+.login-input {
+  width:100%; background:var(--bg2); border:1px solid var(--border);
+  border-radius:var(--r); color:var(--t1); font-family:var(--mono);
+  font-size:16px; padding:14px; text-align:center; letter-spacing:8px;
+  outline:none; transition:border-color .2s; margin-bottom:12px;
+}
+.login-input:focus { border-color:var(--gold-br) }
+.login-btn {
+  width:100%; background:var(--gold); color:#000;
+  font-family:var(--mono); font-size:12px; font-weight:700;
+  padding:14px; border-radius:var(--r); letter-spacing:2px;
+  transition:all .2s;
+}
+.login-btn:hover { background:var(--gold2); transform:translateY(-1px) }
+.login-err { color:var(--red); font-size:11px; margin-top:10px; display:none; font-family:var(--mono) }
+
+/* ═══════════════ LAYOUT ═══════════════ */
+#app { display:none }
+.topbar {
+  background:var(--bg1); border-bottom:1px solid var(--border);
+  height:56px; display:flex; align-items:center; padding:0 20px;
+  gap:16px; position:sticky; top:0; z-index:100;
+}
+.logo { font-family:var(--mono); font-size:16px; font-weight:700; color:var(--gold); letter-spacing:3px }
+.logo span { font-size:9px; font-weight:400; color:var(--t3); letter-spacing:1px; display:block; margin-top:1px }
+.topbar-mid { flex:1; display:flex; align-items:center; gap:20px }
+.topbar-stat { display:flex; flex-direction:column; align-items:center }
+.topbar-stat .lbl { font-size:9px; color:var(--t3); font-family:var(--mono); text-transform:uppercase; letter-spacing:.8px }
+.topbar-stat .val { font-family:var(--mono); font-size:12px; font-weight:600; margin-top:2px }
+.topbar-right { display:flex; align-items:center; gap:8px }
+.conn-dot { width:7px; height:7px; border-radius:50%; background:var(--t3); animation:blink 2s infinite }
+.conn-dot.live { background:var(--green) }
+.conn-txt { font-family:var(--mono); font-size:10px; color:var(--t2) }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:.2} }
+
+.wrap { max-width:1480px; margin:0 auto; padding:16px }
+
+/* ─── Tabs ─── */
+.tabs { display:flex; gap:1px; background:var(--bg2); border-radius:var(--r); padding:4px; margin-bottom:16px }
+.tab {
+  flex:1; padding:9px 8px; border-radius:var(--r2);
+  font-size:12px; font-weight:500; color:var(--t2);
+  transition:all .18s; white-space:nowrap; text-align:center;
+}
+.tab:hover:not(.active) { color:var(--t1); background:var(--bg3) }
+.tab.active { background:var(--bg3); color:var(--gold); font-weight:600 }
+
+.panel { display:none }
+.panel.active { display:block }
+
+/* ═══════════════ CARDS ═══════════════ */
+.card {
+  background:var(--bg1); border:1px solid var(--border);
+  border-radius:var(--r3); overflow:hidden;
+}
+.card-head {
+  padding:14px 18px; border-bottom:1px solid var(--border2);
+  display:flex; align-items:center; justify-content:space-between;
+}
+.card-title { font-size:11px; color:var(--t2); font-family:var(--mono); text-transform:uppercase; letter-spacing:1.5px }
+.card-badge {
+  font-family:var(--mono); font-size:10px; padding:2px 10px;
+  border-radius:20px; font-weight:600;
+}
+.badge-gold { background:var(--gold-bg); color:var(--gold); border:1px solid var(--gold-br) }
+.badge-green { background:var(--green-bg); color:var(--green); border:1px solid var(--green-br) }
+.badge-red { background:var(--red-bg); color:var(--red); border:1px solid var(--red-br) }
+.badge-blue { background:var(--blue-bg); color:var(--blue); border:1px solid var(--blue-br) }
+.badge-purp { background:var(--purp-bg); color:var(--purple); border:1px solid var(--purp-br) }
+
+/* ═══════════════ GRID LAYOUTS ═══════════════ */
+.g2 { display:grid; grid-template-columns:1fr 1fr; gap:12px }
+.g3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px }
+.g4 { display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:12px }
+.g5 { display:grid; grid-template-columns:repeat(5,1fr); gap:10px }
+.g6 { display:grid; grid-template-columns:repeat(6,1fr); gap:10px }
+@media(max-width:1100px) { .g6{grid-template-columns:repeat(3,1fr)} .g5{grid-template-columns:repeat(3,1fr)} }
+@media(max-width:800px)  { .g4,.g3{grid-template-columns:1fr 1fr} .g2{grid-template-columns:1fr} }
+@media(max-width:500px)  { .g4{grid-template-columns:1fr 1fr} }
+
+/* ═══════════════ METRIC CARDS ═══════════════ */
+.metric-card {
+  background:var(--bg1); border:1px solid var(--border);
+  border-radius:var(--r3); padding:18px 20px;
+  position:relative; overflow:hidden; transition:border-color .2s;
+}
+.metric-card:hover { border-color:var(--gold-br) }
+.metric-card .mc-icon { position:absolute; right:14px; top:12px; font-size:20px; opacity:.12 }
+.metric-card .mc-lbl { font-size:10px; color:var(--t2); font-family:var(--mono); text-transform:uppercase; letter-spacing:1px; margin-bottom:8px }
+.metric-card .mc-val { font-family:var(--mono); font-size:22px; font-weight:700; line-height:1; margin-bottom:5px }
+.metric-card .mc-sub { font-size:10px; color:var(--t2); font-family:var(--mono) }
+.mc-gold  { color:var(--gold) }
+.mc-green { color:var(--green) }
+.mc-red   { color:var(--red) }
+.mc-blue  { color:var(--blue) }
+.mc-purp  { color:var(--purple) }
+.mc-muted { color:var(--t2) }
+
+/* ═══════════════ BALANCE PANEL ═══════════════ */
+.bal-panel {
+  background:var(--bg1); border:1px solid var(--border);
+  border-radius:var(--r3); padding:20px;
+}
+.bal-panel.spot-panel { border-top:2px solid var(--blue) }
+.bal-panel.fut-panel  { border-top:2px solid var(--purple) }
+.bp-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:18px }
+.bp-title { font-family:var(--mono); font-size:11px; font-weight:700; letter-spacing:2px; text-transform:uppercase }
+.bp-title.spot { color:var(--blue) }
+.bp-title.fut  { color:var(--purple) }
+.bp-tag { font-family:var(--mono); font-size:9px; padding:3px 8px; border-radius:4px; font-weight:700 }
+.bp-metrics { display:grid; grid-template-columns:repeat(3,1fr); gap:12px }
+.bpm .lbl { font-size:9px; color:var(--t2); font-family:var(--mono); text-transform:uppercase; letter-spacing:.8px; margin-bottom:5px }
+.bpm .val { font-family:var(--mono); font-size:20px; font-weight:700 }
+.bpm .sub { font-size:9px; color:var(--t3); margin-top:3px; font-family:var(--mono) }
+
+/* ─── Daily Loss Bar ─── */
+.dl-bar-wrap { margin-top:16px }
+.dl-bar-row { display:flex; justify-content:space-between; font-size:10px; color:var(--t2); font-family:var(--mono); margin-bottom:5px }
+.dl-bar { height:3px; background:var(--bg3); border-radius:2px; overflow:hidden }
+.dl-fill { height:100%; border-radius:2px; transition:width .6s, background .4s }
+
+/* ─── Futures Positions ─── */
+.pos-row {
+  display:flex; align-items:center; gap:10px; padding:10px 14px;
+  border-bottom:1px solid var(--border2); font-family:var(--mono); font-size:11px;
+}
+.pos-sym { font-weight:700; color:var(--t1); min-width:90px }
+.pos-side { padding:2px 7px; border-radius:4px; font-size:9px; font-weight:700; text-transform:uppercase }
+.pos-long  { background:var(--blue-bg); color:var(--blue); border:1px solid var(--blue-br) }
+.pos-short { background:var(--purp-bg); color:var(--purple); border:1px solid var(--purp-br) }
+
+/* ═══════════════ BUTTONS ═══════════════ */
+.btn {
+  display:inline-flex; align-items:center; gap:5px; padding:8px 14px;
+  border-radius:var(--r2); font-size:12px; font-weight:600;
+  transition:all .15s; white-space:nowrap; cursor:pointer; border:1px solid transparent;
+}
+.btn:active { transform:scale(.97) }
+.btn-gold   { background:var(--gold); color:#000; border-color:var(--gold) }
+.btn-gold:hover { background:var(--gold2) }
+.btn-green  { background:var(--green-bg); color:var(--green); border-color:var(--green-br) }
+.btn-green:hover { background:rgba(14,203,129,.14) }
+.btn-red    { background:var(--red-bg); color:var(--red); border-color:var(--red-br) }
+.btn-red:hover { background:rgba(246,70,93,.14) }
+.btn-blue   { background:var(--blue-bg); color:var(--blue); border-color:var(--blue-br) }
+.btn-blue:hover { background:rgba(24,144,255,.14) }
+.btn-ghost  { background:var(--bg2); color:var(--t2); border-color:var(--border) }
+.btn-ghost:hover { color:var(--t1); background:var(--bg3) }
+.btn-yellow { background:rgba(240,185,11,.1); color:var(--gold); border-color:var(--gold-br) }
+.btn-yellow:hover { background:rgba(240,185,11,.18) }
+
+/* ─── Action Bar ─── */
+.abar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:14px }
+.adiv { width:1px; height:22px; background:var(--border); align-self:center }
+
+/* ═══════════════ TABLE ═══════════════ */
+.tbl-wrap { overflow-x:auto }
+table { width:100%; border-collapse:collapse }
+thead th {
+  padding:10px 14px; font-size:9px; font-family:var(--mono);
+  color:var(--t2); text-transform:uppercase; letter-spacing:1.2px;
+  text-align:left; background:var(--bg2); border-bottom:1px solid var(--border);
+  white-space:nowrap;
+}
+tbody tr { border-bottom:1px solid var(--border2); transition:background .12s }
+tbody tr:hover { background:var(--bg2) }
+tbody tr.flash-row { animation:flash-anim 2s ease-out }
+@keyframes flash-anim { 0%{background:rgba(240,185,11,.1)} 100%{background:transparent} }
+td { padding:11px 14px; font-size:12px; white-space:nowrap; text-align:left }
+.td-mono  { font-family:var(--mono) }
+.td-muted { color:var(--t2); font-size:10px; font-family:var(--mono) }
+.td-pair  { font-family:var(--mono); font-weight:700 }
+.td-price { font-family:var(--mono); color:var(--gold) }
+
+/* Trade type badges */
+.tb { display:inline-flex; align-items:center; padding:2px 8px; border-radius:4px; font-family:var(--mono); font-size:9px; font-weight:700; letter-spacing:.5px; text-transform:uppercase; white-space:nowrap }
+.tb-buy     { background:var(--green-bg); color:var(--green); border:1px solid var(--green-br) }
+.tb-sell    { background:var(--red-bg); color:var(--red); border:1px solid var(--red-br) }
+.tb-long    { background:var(--blue-bg); color:var(--blue); border:1px solid var(--blue-br) }
+.tb-lclose  { background:rgba(24,144,255,.04); color:var(--blue); border:1px solid rgba(24,144,255,.12) }
+.tb-short   { background:var(--purp-bg); color:var(--purple); border:1px solid var(--purp-br) }
+.tb-sclose  { background:rgba(123,97,255,.04); color:var(--purple); border:1px solid rgba(123,97,255,.12) }
+.mkt-s { background:var(--blue-bg); color:var(--blue); font-size:8px; padding:1px 5px; border-radius:3px; font-family:var(--mono); font-weight:700 }
+.mkt-f { background:var(--purp-bg); color:var(--purple); font-size:8px; padding:1px 5px; border-radius:3px; font-family:var(--mono); font-weight:700 }
+.reason-tag { font-size:10px; color:var(--t2); font-family:var(--mono) }
+
+/* PnL */
+.pnl-pos { color:var(--green); font-family:var(--mono); font-weight:600 }
+.pnl-neg { color:var(--red);   font-family:var(--mono); font-weight:600 }
+.pnl-nil { color:var(--t3);    font-family:var(--mono) }
+
+/* Empty state */
+.empty-state { padding:48px; text-align:center; color:var(--t3) }
+.empty-state .ei { font-size:28px; display:block; margin-bottom:10px; opacity:.3 }
+.empty-state .et { font-family:var(--mono); font-size:11px }
+
+/* ═══════════════ SETTINGS ═══════════════ */
+.settings-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:12px }
+.s-group { background:var(--bg2); border:1px solid var(--border); border-radius:var(--r3); padding:18px }
+.s-group-title { font-size:10px; color:var(--t2); font-family:var(--mono); text-transform:uppercase; letter-spacing:1.5px; margin-bottom:16px; display:flex; align-items:center; gap:6px }
+.s-row { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:12px }
+.s-row:last-child { margin-bottom:0 }
+.s-lbl { font-size:12px; color:var(--t1) }
+.s-sub { font-size:10px; color:var(--t2); margin-top:2px }
+
+/* Toggle */
+.toggle { position:relative; display:inline-block; width:40px; height:22px; flex-shrink:0 }
+.toggle input { opacity:0; width:0; height:0 }
+.tgl-slider { position:absolute; cursor:pointer; inset:0; background:var(--bg3); border-radius:22px; transition:.25s; border:1px solid var(--border) }
+.tgl-slider:before { position:absolute; content:""; height:16px; width:16px; left:2px; bottom:2px; background:var(--t3); border-radius:50%; transition:.25s }
+.toggle input:checked + .tgl-slider { background:rgba(14,203,129,.15); border-color:var(--green-br) }
+.toggle input:checked + .tgl-slider:before { transform:translateX(18px); background:var(--green) }
+
+/* Number input */
+.n-input {
+  background:var(--bg3); border:1px solid var(--border); color:var(--t1);
+  font-family:var(--mono); font-size:12px; font-weight:600;
+  width:72px; padding:5px 8px; border-radius:var(--r2); text-align:center; outline:none;
+  transition:border-color .15s;
+}
+.n-input:focus { border-color:var(--gold-br) }
+.n-input[type=time] { width:90px }
+
+.sel-input {
+  background:var(--bg3); border:1px solid var(--border); color:var(--t1);
+  font-size:12px; padding:5px 8px; border-radius:var(--r2); cursor:pointer; outline:none;
+}
+.sel-input:focus { border-color:var(--gold-br) }
+
+/* ═══════════════ EQUITY CHART ═══════════════ */
+.chart-wrap { padding:16px 20px }
+#equityCanvas { width:100%; height:200px; display:block }
+
+/* ═══════════════ MOVERS ═══════════════ */
+.mover-card {
+  background:var(--bg2); border:1px solid var(--border);
+  border-radius:var(--r3); padding:16px; text-align:center;
+  transition:border-color .18s, transform .18s; cursor:pointer;
+}
+.mover-card:hover { border-color:var(--gold-br); transform:translateY(-2px) }
+.mover-sym  { font-family:var(--mono); font-size:13px; font-weight:700; margin-bottom:6px }
+.mover-pct  { font-family:var(--mono); font-size:17px; font-weight:700 }
+.mover-info { font-family:var(--mono); font-size:9px; color:var(--t2); margin-top:4px }
+
+/* ═══════════════ TOAST NOTIFICATIONS ═══════════════ */
+#toastContainer {
+  position:fixed; top:68px; right:16px; z-index:9999;
+  display:flex; flex-direction:column; gap:8px; pointer-events:none;
+  max-width:340px;
+}
+.toast {
+  padding:12px 16px; border-radius:var(--r); font-size:12px;
+  font-family:var(--mono); display:flex; align-items:center; gap:8px;
+  animation:slideIn .25s ease-out; pointer-events:all;
+  border:1px solid; backdrop-filter:blur(10px);
+  box-shadow:0 8px 24px rgba(0,0,0,.4);
+}
+.toast.success { background:rgba(14,203,129,.12); border-color:var(--green-br); color:var(--green) }
+.toast.error   { background:rgba(246,70,93,.12); border-color:var(--red-br); color:var(--red) }
+.toast.info    { background:rgba(24,144,255,.12); border-color:var(--blue-br); color:var(--blue) }
+.toast.warning { background:rgba(243,123,36,.12); border-color:var(--oran-br); color:var(--orange) }
+@keyframes slideIn { from{transform:translateX(120%);opacity:0} to{transform:translateX(0);opacity:1} }
+@keyframes slideOut { from{transform:translateX(0);opacity:1} to{transform:translateX(120%);opacity:0} }
+
+/* ═══════════════ MODAL ═══════════════ */
+.modal { display:none; position:fixed; inset:0; background:rgba(0,0,0,.75); z-index:500; align-items:center; justify-content:center; padding:20px }
+.modal.open { display:flex }
+.modal-box {
+  background:var(--bg1); border:1px solid var(--gold-br);
+  border-radius:16px; padding:28px; max-width:460px; width:100%;
+  position:relative; max-height:90vh; overflow-y:auto;
+}
+.modal-title { font-family:var(--mono); color:var(--gold); font-size:12px; font-weight:700; letter-spacing:2px; margin-bottom:18px }
+.modal-close { position:absolute; top:14px; right:16px; color:var(--t2); font-size:18px; cursor:pointer; transition:color .15s }
+.modal-close:hover { color:var(--t1) }
+
+/* ═══════════════ ANALYTICS ═══════════════ */
+.analytics-row { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:14px }
+.stat-row { display:flex; justify-content:space-between; align-items:center; padding:10px 0; border-bottom:1px solid var(--border2) }
+.stat-row:last-child { border-bottom:none }
+.stat-lbl { font-size:12px; color:var(--t2) }
+.stat-val { font-family:var(--mono); font-size:13px; font-weight:600 }
+
+/* ─── Period selector ─── */
+.period-tabs { display:flex; gap:4px; background:var(--bg2); padding:4px; border-radius:var(--r2); width:fit-content }
+.period-tab { padding:5px 12px; border-radius:3px; font-size:11px; font-family:var(--mono); font-weight:600; color:var(--t2); cursor:pointer; transition:all .15s }
+.period-tab.active { background:var(--bg3); color:var(--gold) }
+
+/* ─── Heatmap ─── */
+.heatmap-grid { display:grid; grid-template-columns:repeat(24,1fr); gap:2px }
+.hmap-cell { aspect-ratio:1; border-radius:2px; position:relative; cursor:default }
+.hmap-lbl { font-size:7px; color:var(--t3); font-family:var(--mono); text-align:center; margin-bottom:3px }
+
+/* ═══════════════ STATE INDICATOR ═══════════════ */
+.state-badge {
+  padding:5px 12px; border-radius:20px;
+  font-family:var(--mono); font-size:9px; font-weight:700;
+  display:inline-flex; align-items:center; gap:5px; border:1px solid;
+}
+.state-active   { background:var(--green-bg); color:var(--green); border-color:var(--green-br) }
+.state-paused   { background:rgba(240,185,11,.08); color:var(--gold); border-color:var(--gold-br) }
+.state-emer     { background:var(--red-bg); color:var(--red); border-color:var(--red-br); animation:blink 1s infinite }
+.state-calendar { background:var(--oran-bg); color:var(--orange); border-color:var(--oran-br) }
+
+/* ═══════════════ PORTFOLIO TABLE ═══════════════ */
+.port-coin { display:flex; align-items:center; gap:8px }
+.coin-dot { width:8px; height:8px; border-radius:50%; background:var(--gold); flex-shrink:0 }
+.coin-name { font-family:var(--mono); font-weight:700 }
+
+/* ─── Progress bar (concentration) ─── */
+.conc-bar { height:3px; background:var(--bg3); border-radius:2px; margin-top:4px; overflow:hidden }
+.conc-fill { height:100%; border-radius:2px }
+
+/* ─── Divider ─── */
+.divider { height:1px; background:var(--border); margin:14px 0 }
+
+/* ─── Section spacing ─── */
+.mb12 { margin-bottom:12px }
+.mb16 { margin-bottom:16px }
+
+/* ─── Footer ─── */
+.footer { text-align:center; padding:24px; color:var(--t3); font-family:var(--mono); font-size:9px; letter-spacing:2px }
+
+/* ─── Ticker bar ─── */
+.ticker-bar {
+  background:var(--bg1); border-bottom:1px solid var(--border2);
+  padding:6px 20px; display:flex; align-items:center; gap:14px;
+  font-family:var(--mono); font-size:10px; color:var(--t2);
+  overflow-x:auto;
+}
+.ticker-sep { color:var(--t4) }
+.ticker-live { color:var(--gold); font-weight:700; background:var(--gold-bg); padding:1px 7px; border-radius:3px }
+</style>
+</head>
+<body>
+
+<!-- ═══ TOAST CONTAINER ═══ -->
+<div id="toastContainer"></div>
+
+<!-- ═══ LOGIN ═══ -->
+<div id="loginPage">
+  <div class="login-box">
+    <div class="login-logo">SOVEREIGN</div>
+    <div class="login-sub">TRADING SYSTEM · V8.0</div>
+    <input id="pwInput" class="login-input" type="password" placeholder="••••••••" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()">
+    <button class="login-btn" onclick="doLogin()">ENTER SYSTEM →</button>
+    <div class="login-err" id="loginErr">❌ Incorrect password</div>
+  </div>
+</div>
+
+<!-- ═══ APP ═══ -->
+<div id="app">
+
+  <!-- Top Bar -->
+  <div class="topbar">
+    <div class="logo">SOVEREIGN<span>SPOT + FUTURES · V8.0</span></div>
+    <div class="topbar-mid">
+      <div class="topbar-stat"><span class="lbl">Portfolio</span><span class="val mc-gold" id="tb-total">--</span></div>
+      <div class="topbar-stat"><span class="lbl">Total PnL</span><span class="val" id="tb-pnl">--</span></div>
+      <div class="topbar-stat"><span class="lbl">Win Rate</span><span class="val mc-green" id="tb-wr">--</span></div>
+      <div class="topbar-stat"><span class="lbl">Open</span><span class="val mc-blue" id="tb-open">0</span></div>
+      <span id="stateBadge" class="state-badge state-active">⏳ Loading</span>
+    </div>
+    <div class="topbar-right">
+      <div class="conn-dot" id="connDot"></div>
+      <span class="conn-txt" id="connTxt">Connecting...</span>
+    </div>
+  </div>
+
+  <!-- Ticker Bar -->
+  <div class="ticker-bar">
+    <span class="ticker-live">⚡ LIVE</span>
+    <span id="clock">--:--:--</span>
+    <span class="ticker-sep">|</span>
+    <span>Loss Today: <span id="dl-ticker" style="color:var(--t1)">--</span></span>
+    <span class="ticker-sep">|</span>
+    <span>Updated: <span id="last-upd" style="color:var(--t1)">--</span></span>
+    <span class="ticker-sep" id="cal-sep" style="display:none">|</span>
+    <span id="cal-ticker" style="color:var(--orange);display:none"></span>
+  </div>
+
+  <div class="wrap">
+
+    <!-- Tabs -->
+    <div class="tabs">
+      <button class="tab active" onclick="switchTab('overview',this)">📊 Overview</button>
+      <button class="tab" onclick="switchTab('analytics',this)">📈 Analytics</button>
+      <button class="tab" onclick="switchTab('portfolio',this)">💼 Portfolio</button>
+      <button class="tab" onclick="switchTab('trades',this)">📋 Trades</button>
+      <button class="tab" onclick="switchTab('settings',this)">⚙️ Settings</button>
+      <button class="tab" onclick="switchTab('movers',this);loadMovers()">🔥 Movers</button>
+      <button class="tab" onclick="switchTab('security',this)">🔒 Security</button>
+    </div>
+
+    <!-- ══════ OVERVIEW ══════ -->
+    <div id="tab-overview" class="panel active">
+      <!-- Action Bar -->
+      <div class="abar">
+        <button class="btn btn-yellow" id="toggleBtn" onclick="toggleBot()">⏸ Pause</button>
+        <button class="btn btn-red" id="emerBtn" onclick="emergencyStop()">🚨 Emergency Stop</button>
+        <button class="btn btn-green" id="resumeBtn" style="display:none" onclick="resumeBot()">▶ Resume</button>
+        <div class="adiv"></div>
+        <button class="btn btn-red btn-ghost" onclick="liquidateSpot()" style="border-color:var(--red-br);color:var(--red)">⚠ Liquidate Spot</button>
+        <button class="btn btn-red btn-ghost" onclick="liquidateFutures()" style="border-color:var(--red-br);color:var(--red)">⚠ Close Futures</button>
+        <div class="adiv"></div>
+        <button class="btn btn-gold" onclick="openModal('excelModal')">📊 Export Excel</button>
+      </div>
+
+      <!-- Balance Grid -->
+      <div class="g2 mb16">
+        <!-- Spot -->
+        <div class="bal-panel spot-panel">
+          <div class="bp-header">
+            <div class="bp-title spot">💧 SPOT</div>
+            <span class="bp-tag badge-blue">Testnet</span>
+          </div>
+          <div class="bp-metrics">
+            <div class="bpm"><div class="lbl">Portfolio Value</div><div class="val mc-gold" id="s-total">--</div><div class="sub">USDT</div></div>
+            <div class="bpm"><div class="lbl">Free USDT</div><div class="val mc-blue" id="s-usdt">--</div><div class="sub">Available</div></div>
+            <div class="bpm"><div class="lbl">Total PnL</div><div class="val" id="s-pnl">--</div><div class="sub" id="s-pnl-pct">--</div></div>
+          </div>
+          <div class="dl-bar-wrap">
+            <div class="dl-bar-row"><span>Daily Loss</span><span id="dl-text">--</span></div>
+            <div class="dl-bar"><div id="dl-fill" class="dl-fill" style="width:0;background:var(--green)"></div></div>
+          </div>
+        </div>
+        <!-- Futures -->
+        <div class="bal-panel fut-panel">
+          <div class="bp-header">
+            <div class="bp-title fut">⚡ FUTURES</div>
+            <span class="bp-tag badge-purp">× <span id="lev-disp">--</span></span>
+          </div>
+          <div class="bp-metrics">
+            <div class="bpm"><div class="lbl">Balance</div><div class="val mc-gold" id="f-total">--</div><div class="sub">USDT</div></div>
+            <div class="bpm"><div class="lbl">Positions</div><div class="val mc-purp" id="f-pos">0</div><div class="sub">Open</div></div>
+            <div class="bpm"><div class="lbl">Unrealized</div><div class="val" id="f-pnl">--</div><div class="sub" id="f-pnl-pct">--</div></div>
+          </div>
+          <div id="fut-holdings"></div>
+        </div>
+      </div>
+
+      <!-- Stat Cards -->
+      <div class="g6 mb16">
+        <div class="metric-card"><div class="mc-icon">📊</div><div class="mc-lbl">Total Trades</div><div class="mc-val mc-gold" id="st-total">0</div><div class="mc-sub">All time</div></div>
+        <div class="metric-card"><div class="mc-icon">🎯</div><div class="mc-lbl">Win Rate</div><div class="mc-val" id="st-wr">0%</div><div class="mc-sub" id="st-wl">0W / 0L</div></div>
+        <div class="metric-card"><div class="mc-icon">💰</div><div class="mc-lbl">Net PnL</div><div class="mc-val" id="st-pnl">$0.00</div><div class="mc-sub">Realized</div></div>
+        <div class="metric-card"><div class="mc-icon">⚡</div><div class="mc-lbl">Profit Factor</div><div class="mc-val mc-blue" id="st-pf">--</div><div class="mc-sub">Gross P / Gross L</div></div>
+        <div class="metric-card"><div class="mc-icon">📉</div><div class="mc-lbl">Max Drawdown</div><div class="mc-val mc-red" id="st-dd">$0</div><div class="mc-sub">Peak to trough</div></div>
+        <div class="metric-card"><div class="mc-icon">🏆</div><div class="mc-lbl">Best Trade</div><div class="mc-val mc-green" id="st-best">--</div><div class="mc-sub">Single trade</div></div>
+      </div>
+
+      <!-- Equity Curve -->
+      <div class="card mb16">
+        <div class="card-head"><span class="card-title">📈 Equity Curve</span><span class="card-badge badge-gold" id="eq-balance">--</span></div>
+        <div class="chart-wrap"><canvas id="equityCanvas"></canvas></div>
+      </div>
+
+      <!-- Recent Trades (last 10) -->
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">⚡ Recent Trades</span>
+          <button class="btn btn-ghost" style="font-size:10px;padding:4px 10px" onclick="switchTab('trades',document.querySelectorAll('.tab')[3])">View All →</button>
+        </div>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Date</th><th>Time</th><th>Mkt</th><th>Pair</th><th>Type</th><th>Price</th><th>Total</th><th>PnL $</th><th>Reason</th></tr></thead>
+            <tbody id="recent-tbody"><tr><td colspan="9"><div class="empty-state"><span class="ei">📡</span><span class="et">Waiting for signals...</span></div></td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div><!-- /overview -->
+
+    <!-- ══════ ANALYTICS ══════ -->
+    <div id="tab-analytics" class="panel">
+      <!-- Period Selector -->
+      <div class="abar mb16">
+        <span style="font-size:11px;color:var(--t2);font-family:var(--mono)">Report Period:</span>
+        <div class="period-tabs">
+          <div class="period-tab active" onclick="setPeriod(24,this)">24H</div>
+          <div class="period-tab" onclick="setPeriod(72,this)">3D</div>
+          <div class="period-tab" onclick="setPeriod(168,this)">7D</div>
+          <div class="period-tab" onclick="setPeriod(720,this)">30D</div>
+          <div class="period-tab" onclick="setPeriod(99999,this)">All</div>
+        </div>
+      </div>
+
+      <!-- Period Stats -->
+      <div class="g4 mb16" id="period-cards">
+        <div class="metric-card"><div class="mc-lbl">Trades</div><div class="mc-val mc-gold" id="p-trades">0</div></div>
+        <div class="metric-card"><div class="mc-lbl">Win Rate</div><div class="mc-val" id="p-wr">0%</div></div>
+        <div class="metric-card"><div class="mc-lbl">PnL</div><div class="mc-val" id="p-pnl">$0</div></div>
+        <div class="metric-card"><div class="mc-lbl">W / L</div><div class="mc-val mc-muted" id="p-wl">0 / 0</div></div>
+      </div>
+
+      <!-- Advanced Stats -->
+      <div class="g2 mb16">
+        <div class="card">
+          <div class="card-head"><span class="card-title">📊 Performance Metrics</span></div>
+          <div style="padding:16px 20px">
+            <div class="stat-row"><span class="stat-lbl">Sharpe Ratio</span><span class="stat-val" id="a-sharpe">--</span></div>
+            <div class="stat-row"><span class="stat-lbl">Profit Factor</span><span class="stat-val" id="a-pf">--</span></div>
+            <div class="stat-row"><span class="stat-lbl">Expectancy</span><span class="stat-val" id="a-exp">--</span></div>
+            <div class="stat-row"><span class="stat-lbl">Avg Win</span><span class="stat-val mc-green" id="a-avgwin">--</span></div>
+            <div class="stat-row"><span class="stat-lbl">Avg Loss</span><span class="stat-val mc-red" id="a-avgloss">--</span></div>
+            <div class="stat-row"><span class="stat-lbl">Max Consecutive Wins</span><span class="stat-val mc-green" id="a-cwin">--</span></div>
+            <div class="stat-row"><span class="stat-lbl">Max Consecutive Losses</span><span class="stat-val mc-red" id="a-closs">--</span></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-title">💵 PnL Breakdown</span></div>
+          <div style="padding:16px 20px">
+            <div class="stat-row"><span class="stat-lbl">Gross Profit</span><span class="stat-val mc-green" id="a-gp">--</span></div>
+            <div class="stat-row"><span class="stat-lbl">Gross Loss</span><span class="stat-val mc-red" id="a-gl">--</span></div>
+            <div class="stat-row"><span class="stat-lbl">Net PnL</span><span class="stat-val" id="a-net">--</span></div>
+            <div class="stat-row"><span class="stat-lbl">Max Drawdown</span><span class="stat-val mc-red" id="a-dd">--</span></div>
+            <div class="stat-row"><span class="stat-lbl">Best Trade</span><span class="stat-val mc-green" id="a-best">--</span></div>
+            <div class="stat-row"><span class="stat-lbl">Worst Trade</span><span class="stat-val mc-red" id="a-worst">--</span></div>
+            <div class="stat-row"><span class="stat-lbl">Total Trades</span><span class="stat-val mc-gold" id="a-total">--</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Equity Curve Full -->
+      <div class="card mb16">
+        <div class="card-head"><span class="card-title">📈 Portfolio Growth</span><span class="card-badge badge-gold" id="eq-bal2">--</span></div>
+        <div class="chart-wrap"><canvas id="equityCanvas2" style="height:260px"></canvas></div>
+      </div>
+
+      <!-- Trade Distribution Chart -->
+      <div class="card">
+        <div class="card-head"><span class="card-title">🎯 Trade Results Distribution</span></div>
+        <div class="chart-wrap"><canvas id="distCanvas" style="height:180px"></canvas></div>
+      </div>
+    </div><!-- /analytics -->
+
+    <!-- ══════ PORTFOLIO ══════ -->
+    <div id="tab-portfolio" class="panel">
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">💼 Current Holdings</span>
+          <span class="card-badge badge-gold" id="port-count">0 coins</span>
+        </div>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Coin</th><th>Amount</th><th>Buy Price</th><th>Current</th><th>Value $</th><th>PnL $</th><th>PnL %</th><th>Allocation</th></tr></thead>
+            <tbody id="port-tbody"><tr><td colspan="8"><div class="empty-state"><span class="ei">💼</span><span class="et">No positions held</span></div></td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div><!-- /portfolio -->
+
+    <!-- ══════ TRADES ══════ -->
+    <div id="tab-trades" class="panel">
+      <!-- Filters -->
+      <div class="abar mb12">
+        <select class="sel-input" id="filter-market" onchange="filterTrades()">
+          <option value="">All Markets</option>
+          <option value="SPOT">Spot</option>
+          <option value="FUTURES">Futures</option>
+        </select>
+        <select class="sel-input" id="filter-type" onchange="filterTrades()">
+          <option value="">All Types</option>
+          <option value="buy">Buy</option>
+          <option value="sell">Sell</option>
+          <option value="long_open">Long Open</option>
+          <option value="long_close">Long Close</option>
+          <option value="short_open">Short Open</option>
+          <option value="short_close">Short Close</option>
+        </select>
+        <input class="n-input" type="text" id="filter-pair" placeholder="Pair..." oninput="filterTrades()" style="width:100px;text-align:left">
+        <button class="btn btn-ghost" onclick="clearFilters()">Clear</button>
+        <div class="adiv"></div>
+        <span style="font-family:var(--mono);font-size:10px;color:var(--t2)" id="trade-count-info">-- trades</span>
+      </div>
+      <div class="card">
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Date</th><th>Time</th><th>Mkt</th><th>Pair</th><th>Type</th><th>Qty</th><th>Price</th><th>Total</th><th>PnL $</th><th>PnL %</th><th>Reason</th><th>Status</th></tr></thead>
+            <tbody id="all-tbody"><tr><td colspan="12"><div class="empty-state"><span class="ei">📡</span><span class="et">Waiting for signals...</span></div></td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div><!-- /trades -->
+
+    <!-- ══════ SETTINGS ══════ -->
+    <div id="tab-settings" class="panel">
+      <div class="settings-grid">
+
+        <!-- Spot -->
+        <div class="s-group">
+          <div class="s-group-title">💧 SPOT</div>
+          <div class="s-row"><div><div class="s-lbl">Buy Mode</div></div>
+            <select class="sel-input" id="s-buy-mode" onchange="ss('spot_buy_mode',this.value)">
+              <option value="fixed">Fixed $</option>
+              <option value="percent">Percent %</option>
+            </select>
+          </div>
+          <div class="s-row"><div class="s-lbl">Buy Value</div><input class="n-input" id="s-buy-val" type="number" min="11" onchange="ss('spot_buy_value',+this.value)"></div>
+          <div class="s-row"><div class="s-lbl">Sell Ratio (1=100%)</div><input class="n-input" id="s-sell-r" type="number" min="0.1" max="1" step="0.1" onchange="ss('spot_sell_ratio',+this.value)"></div>
+          <div class="s-row"><div class="s-lbl">Max Positions</div><input class="n-input" id="s-max-pos" type="number" min="1" max="20" onchange="ss('spot_max_positions',+this.value)"></div>
+        </div>
+
+        <!-- Futures -->
+        <div class="s-group">
+          <div class="s-group-title">⚡ FUTURES</div>
+          <div class="s-row"><div class="s-lbl">Enable Futures</div><label class="toggle"><input type="checkbox" id="fut-en" onchange="ss('futures_enabled',this.checked)"><span class="tgl-slider"></span></label></div>
+          <div class="s-row"><div class="s-lbl">Position Size $</div><input class="n-input" id="f-val" type="number" min="11" onchange="ss('futures_value',+this.value)"></div>
+          <div class="s-row"><div class="s-lbl">Leverage ×</div><input class="n-input" id="lev-in" type="number" min="1" max="125" onchange="ss('leverage',+this.value)"></div>
+          <div class="s-row"><div class="s-lbl">Max Positions</div><input class="n-input" id="f-max-pos" type="number" min="1" max="10" onchange="ss('futures_max_positions',+this.value)"></div>
+        </div>
+
+        <!-- Risk -->
+        <div class="s-group">
+          <div class="s-group-title">🛡️ RISK MANAGEMENT</div>
+          <div class="s-row"><div class="s-lbl">Enable Risk Mgmt</div><label class="toggle"><input type="checkbox" id="risk-en" onchange="ss('risk_enabled',this.checked)"><span class="tgl-slider"></span></label></div>
+          <div class="s-row"><div class="s-lbl">Trailing Stop %</div><input class="n-input" id="trail-pct" type="number" min="0.1" max="20" step="0.1" onchange="ss('trailing_stop_pct',+this.value)"></div>
+          <div class="s-row"><div class="s-lbl">Fixed Stop Loss %</div><input class="n-input" id="fsl-pct" type="number" min="0.1" max="50" step="0.1" onchange="ss('fixed_stop_loss_pct',+this.value)"></div>
+        </div>
+
+        <!-- Position Sizing -->
+        <div class="s-group">
+          <div class="s-group-title">📐 POSITION SIZING</div>
+          <div class="s-row"><div class="s-lbl">Auto Sizing</div><label class="toggle"><input type="checkbox" id="ps-en" onchange="ss('position_sizing_enabled',this.checked)"><span class="tgl-slider"></span></label></div>
+          <div class="s-row"><div class="s-lbl">Size % of Portfolio</div><input class="n-input" id="ps-pct" type="number" min="1" max="50" step="0.5" onchange="ss('position_sizing_pct',+this.value)"></div>
+          <div class="s-row"><div class="s-lbl">Max Concentration %</div><input class="n-input" id="max-conc" type="number" min="5" max="100" step="5" onchange="ss('max_concentration_pct',+this.value)"></div>
+        </div>
+
+        <!-- Daily Loss -->
+        <div class="s-group">
+          <div class="s-group-title">🚦 DAILY LOSS LIMIT</div>
+          <div class="s-row"><div class="s-lbl">Enable</div><label class="toggle"><input type="checkbox" id="dl-en" onchange="ss('daily_loss_enabled',this.checked)"><span class="tgl-slider"></span></label></div>
+          <div class="s-row"><div class="s-lbl">Limit %</div><input class="n-input" id="dl-pct" type="number" min="0.5" max="50" step="0.5" onchange="ss('daily_loss_limit_pct',+this.value)"></div>
+        </div>
+
+        <!-- Session -->
+        <div class="s-group">
+          <div class="s-group-title">⏰ SESSION MANAGER</div>
+          <div class="s-row"><div class="s-lbl">Enable</div><label class="toggle"><input type="checkbox" id="sess-en" onchange="ss('session_enabled',this.checked)"><span class="tgl-slider"></span></label></div>
+          <div class="s-row"><div class="s-lbl">Start</div><input class="n-input" id="sess-s" type="time" onchange="ss('session_start',this.value)"></div>
+          <div class="s-row"><div class="s-lbl">End</div><input class="n-input" id="sess-e" type="time" onchange="ss('session_end',this.value)"></div>
+        </div>
+
+        <!-- Calendar -->
+        <div class="s-group">
+          <div class="s-group-title">📅 ECONOMIC CALENDAR</div>
+          <div class="s-row"><div class="s-lbl">Enable</div><label class="toggle"><input type="checkbox" id="cal-en" onchange="ss('calendar_enabled',this.checked)"><span class="tgl-slider"></span></label></div>
+          <div class="s-row"><div class="s-lbl">Pause Before (min)</div><input class="n-input" id="cal-b" type="number" min="5" max="120" onchange="ss('calendar_pause_before',+this.value)"></div>
+          <div class="s-row"><div class="s-lbl">Resume After (min)</div><input class="n-input" id="cal-a" type="number" min="5" max="180" onchange="ss('calendar_resume_after',+this.value)"></div>
+        </div>
+
+        <!-- Notifications -->
+        <div class="s-group">
+          <div class="s-group-title">🔔 NOTIFICATIONS</div>
+          <div class="s-row"><div class="s-lbl">Sound Alerts</div><label class="toggle"><input type="checkbox" id="snd-en" onchange="ss('sound_enabled',this.checked)"><span class="tgl-slider"></span></label></div>
+          <div class="s-row"><div class="s-lbl">Toast Popups</div><label class="toggle"><input type="checkbox" id="toast-en" onchange="ss('toast_enabled',this.checked)"><span class="tgl-slider"></span></label></div>
+        </div>
+
+        <!-- Telegram -->
+        <div class="s-group">
+          <div class="s-group-title">📲 TELEGRAM</div>
+          <div class="s-row"><div class="s-lbl">Enable</div><label class="toggle"><input type="checkbox" id="tg-en" onchange="ss('telegram_enabled',this.checked)"><span class="tgl-slider"></span></label></div>
+          <div class="s-row"><div class="s-lbl">On Trade</div><label class="toggle"><input type="checkbox" id="tg-trade" onchange="ss('telegram_on_trade',this.checked)"><span class="tgl-slider"></span></label></div>
+          <div class="s-row"><div class="s-lbl">On Error</div><label class="toggle"><input type="checkbox" id="tg-err" onchange="ss('telegram_on_error',this.checked)"><span class="tgl-slider"></span></label></div>
+          <div class="s-row"><div class="s-lbl">Daily Report</div><label class="toggle"><input type="checkbox" id="tg-rep" onchange="ss('telegram_daily_report',this.checked)"><span class="tgl-slider"></span></label></div>
+          <div class="s-row"><div class="s-lbl">Report Time</div><input class="n-input" id="tg-time" type="time" onchange="ss('telegram_report_time',this.value)"></div>
+        </div>
+
+      </div>
+    </div><!-- /settings -->
+
+    <!-- ══════ MOVERS ══════ -->
+    <div id="tab-movers" class="panel">
+      <div class="abar mb16">
+        <span style="font-family:var(--mono);font-size:10px;color:var(--t2)">🔥 Top Volatile Coins — 24H</span>
+        <button class="btn btn-blue" onclick="loadMovers()">🔄 Refresh</button>
+      </div>
+      <div class="g5" id="movers-grid">
+        <div class="empty-state" style="grid-column:1/-1"><span class="ei">🔥</span><span class="et">Click Refresh to load</span></div>
+      </div>
+    </div><!-- /movers -->
+
+    <!-- ══════ SECURITY ══════ -->
+    <div id="tab-security" class="panel">
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">🔒 Login History</span>
+          <span class="card-badge badge-gold" id="login-count">0 entries</span>
+        </div>
+        <div class="tbl-wrap">
+          <table>
+            <thead><tr><th>Date</th><th>Time</th><th>IP Address</th><th>Status</th><th>User Agent</th></tr></thead>
+            <tbody id="login-tbody"><tr><td colspan="5"><div class="empty-state"><span class="ei">🔒</span><span class="et">No login history</span></div></td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div style="margin-top:12px" class="card">
+        <div class="card-head"><span class="card-title">🗂️ Error Log</span><button class="btn btn-ghost" onclick="clearErrors()" style="font-size:10px;padding:4px 10px">Clear All</button></div>
+        <div id="error-list"><div class="empty-state"><span class="ei">✅</span><span class="et">No errors</span></div></div>
+      </div>
+    </div><!-- /security -->
+
+  </div><!-- /wrap -->
+
+  <div class="footer">SOVEREIGN V8.0 · SPOT + FUTURES · AI TRADING SYSTEM</div>
+</div><!-- /app -->
+
+<!-- ══ MODAL: EXCEL ══ -->
+<div id="excelModal" class="modal">
+  <div class="modal-box" style="max-width:360px;text-align:center">
+    <button class="modal-close" onclick="closeModal('excelModal')">✕</button>
+    <div class="modal-title">📊 EXPORT EXCEL</div>
+    <p style="color:var(--t2);font-size:13px;margin-bottom:20px;line-height:1.6">Export all trades with dates, prices, and PnL data to Excel.</p>
+    <button class="btn btn-gold" style="width:100%;justify-content:center;padding:13px" onclick="doExport()">⬇ Download Excel File</button>
+  </div>
+</div>
+
+<script>
+// ══════════════════════════════════════════
+// STATE
+// ══════════════════════════════════════════
+let lastData = null;
+let allTrades = [];
+let wsDelay = 2000;
+let seenIds = new Set();
+let shownToasts = new Set();
+const SOUNDS = {
+  buy:  new Audio('data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivsJBzYF2As9j/zbOVhIqc0///8O/z9/f38+3j1tDMycjIxsTCwL69vby7u7u8vL29vb6+vr6+v7+/wMDAwMHBwcHBwcHBwcHBwcHBwcHCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCwsLCw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PD'),
+};
+
+// ══════════════════════════════════════════
+// LOGIN
+// ══════════════════════════════════════════
+function doLogin() {
+  const pw = document.getElementById('pwInput').value.trim();
+  if (!pw) return;
+  fetch('/auth/login', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({password:pw})
+  }).then(r=>r.json()).then(d=>{
+    if (d.ok) { sessionStorage.setItem('sv8','1'); showApp(); }
+    else {
+      const e = document.getElementById('loginErr');
+      e.style.display = 'block';
+      document.getElementById('pwInput').value = '';
+      setTimeout(()=>e.style.display='none', 3000);
+    }
+  }).catch(()=>showApp());
+}
+function showApp() {
+  document.getElementById('loginPage').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+  connect();
+}
+if (sessionStorage.getItem('sv8')==='1') showApp();
+
+// ══════════════════════════════════════════
+// WEBSOCKET
+// ══════════════════════════════════════════
+function connect() {
+  const proto = location.protocol==='https:'?'wss:':'ws:';
+  const ws = new WebSocket(proto+'//'+location.host+'/ws');
+  ws.onopen = ()=>{
+    document.getElementById('connDot').className = 'conn-dot live';
+    document.getElementById('connTxt').textContent = 'Live · Connected';
+    wsDelay = 2000;
+  };
+  ws.onmessage = e=>{
+    lastData = JSON.parse(e.data);
+    allTrades = lastData.trades || [];
+    render(lastData);
+  };
+  ws.onclose = ()=>{
+    document.getElementById('connDot').className = 'conn-dot';
+    document.getElementById('connTxt').textContent = 'Reconnecting...';
+    setTimeout(connect, wsDelay);
+    wsDelay = Math.min(wsDelay*1.5, 30000);
+  };
+  ws.onerror = ()=>ws.close();
+}
+
+// ══════════════════════════════════════════
+// HELPERS
+// ══════════════════════════════════════════
+const f = (n,d=2)=>Number(n||0).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d});
+const sg = v=>v>0?'+':'';
+const pc = v=>v>0?'pnl-pos':v<0?'pnl-neg':'pnl-nil';
+const reasonMap = {stop_loss:'🛑 SL', peak_exit:'🎯 Peak', trailing_stop:'📉 Trail'};
+const tbMap = {
+  buy:        '<span class="tb tb-buy">BUY</span>',
+  sell:       '<span class="tb tb-sell">SELL</span>',
+  long_open:  '<span class="tb tb-long">LONG ▲</span>',
+  long_close: '<span class="tb tb-lclose">▼ Close L</span>',
+  short_open: '<span class="tb tb-short">SHORT ▼</span>',
+  short_close:'<span class="tb tb-sclose">▲ Close S</span>',
+};
+
+function pnlHtml(v, pct) {
+  if (v===0&&(pct===undefined||pct===0)) return '<span class="pnl-nil">—</span>';
+  const c = pc(v);
+  const p = pct!==undefined ? ` <span style="font-size:10px">(${sg(pct)}${pct}%)</span>` : '';
+  return `<span class="${c}">${sg(v)}${f(v)}$${p}</span>`;
+}
+
+// ══════════════════════════════════════════
+// MAIN RENDER
+// ══════════════════════════════════════════
+function render(d) {
+  document.getElementById('last-upd').textContent = new Date().toLocaleTimeString();
+  const s = d.settings || {};
+  syncSettings(s);
+  renderState(s);
+
+  // Topbar
+  const sp = d.spot || {};
+  const fp = d.futures || {};
+  const st = d.stats || {};
+  const allPos = Object.keys(sp.holdings||{}).length + Object.keys(fp.holdings||{}).length;
+  document.getElementById('tb-total').textContent = '$'+f(sp.total||0);
+  const tbPnl = document.getElementById('tb-pnl');
+  const tp = sp.pnl||0;
+  tbPnl.textContent = (tp>=0?'+':'')+f(tp)+'$';
+  tbPnl.className = 'val '+(tp>=0?'mc-green':'mc-red');
+  document.getElementById('tb-wr').textContent = (st.win_rate||0)+'%';
+  document.getElementById('tb-open').textContent = allPos;
+
+  // Spot Balance
+  document.getElementById('s-total').textContent = f(sp.total||0);
+  document.getElementById('s-usdt').textContent  = f(sp.usdt||0);
+  const spnl = sp.pnl||0;
+  const sEl  = document.getElementById('s-pnl');
+  sEl.textContent = sg(spnl)+f(spnl)+'$';
+  sEl.className   = 'val '+( spnl>=0?'mc-green':'mc-red' );
+  document.getElementById('s-pnl-pct').textContent = sg(spnl)+(sp.pnl_pct||0)+'%';
+
+  // Daily Loss
+  const dl = d.daily_loss || {};
+  const dlCur = Math.abs(dl.current||0), dlLim = dl.limit||1;
+  const dlPct = Math.min((dlCur/dlLim)*100,100);
+  document.getElementById('dl-text').textContent   = `${f(dlCur)}$ / ${f(dlLim)}$`;
+  document.getElementById('dl-ticker').textContent = `${f(dlCur)}$ / ${f(dlLim)}$`;
+  const fill = document.getElementById('dl-fill');
+  fill.style.width = dlPct+'%';
+  fill.style.background = dlPct>80?'var(--red)':dlPct>50?'var(--orange)':'var(--green)';
+
+  // Futures
+  document.getElementById('f-total').textContent = f(fp.total||0);
+  document.getElementById('f-pos').textContent   = Object.keys(fp.holdings||{}).length;
+  document.getElementById('lev-disp').textContent = (s.leverage||'--')+'x';
+  const fpnl = fp.pnl||0;
+  const fEl  = document.getElementById('f-pnl');
+  fEl.textContent = sg(fpnl)+f(fpnl)+'$';
+  fEl.className   = 'val '+(fpnl>=0?'mc-green':'mc-red');
+  document.getElementById('f-pnl-pct').textContent = sg(fpnl)+(fp.pnl_pct||0)+'%';
+
+  // Futures Positions
+  renderFuturesPositions(fp.holdings||{});
+
+  // Calendar
+  const calEv = s.calendar_next_event||'';
+  const calTk = document.getElementById('cal-ticker');
+  const calSp = document.getElementById('cal-sep');
+  if (calEv && s.calendar_enabled) {
+    calTk.textContent = `${calEv} — ${s.calendar_next_event_time}`;
+    calTk.style.display=''; calSp.style.display='';
+  } else {
+    calTk.style.display='none'; calSp.style.display='none';
+  }
+
+  // Stats
+  document.getElementById('st-total').textContent = st.total||0;
+  document.getElementById('st-wr').textContent    = (st.win_rate||0)+'%';
+  document.getElementById('st-wr').className      = 'mc-val '+(st.win_rate>=50?'mc-green':st.win_rate>=30?mc-gold:'mc-red');
+  document.getElementById('st-wl').textContent    = `${st.wins||0}W / ${st.losses||0}L`;
+  const pnlEl = document.getElementById('st-pnl');
+  const tp2   = st.total_pnl||0;
+  pnlEl.textContent = (tp2>=0?'+':'')+f(tp2)+'$';
+  pnlEl.className   = 'mc-val '+(tp2>=0?'mc-green':'mc-red');
+  document.getElementById('st-pf').textContent   = st.profit_factor||'--';
+  document.getElementById('st-dd').textContent   = '-$'+f(st.max_drawdown||0);
+  document.getElementById('st-best').textContent = (st.best_trade>0?'+':'')+f(st.best_trade||0)+'$';
+
+  // Analytics
+  document.getElementById('a-sharpe').textContent  = st.sharpe||'--';
+  document.getElementById('a-sharpe').className    = 'stat-val '+((st.sharpe||0)>=1?'mc-green':(st.sharpe||0)>=0?'mc-gold':'mc-red');
+  document.getElementById('a-pf').textContent      = st.profit_factor||'--';
+  document.getElementById('a-exp').textContent     = (st.expectancy>0?'+':'')+f(st.expectancy||0)+'$';
+  document.getElementById('a-avgwin').textContent  = '+$'+f(st.avg_win||0);
+  document.getElementById('a-avgloss').textContent = '$'+f(st.avg_loss||0);
+  document.getElementById('a-cwin').textContent    = st.consecutive_wins||0;
+  document.getElementById('a-closs').textContent   = st.consecutive_losses||0;
+  document.getElementById('a-gp').textContent      = '+$'+f(st.gross_profit||0);
+  document.getElementById('a-gl').textContent      = '-$'+f(st.gross_loss||0);
+  const aNet = document.getElementById('a-net');
+  const np   = st.total_pnl||0;
+  aNet.textContent = (np>=0?'+':'')+f(np)+'$';
+  aNet.className   = 'stat-val '+(np>=0?'mc-green':'mc-red');
+  document.getElementById('a-dd').textContent    = '-$'+f(st.max_drawdown||0);
+  document.getElementById('a-best').textContent  = '+$'+f(st.best_trade||0);
+  document.getElementById('a-worst').textContent = '$'+f(st.worst_trade||0);
+  document.getElementById('a-total').textContent = st.total||0;
+
+  // Period stats
+  const ps = d.period_stats||{};
+  document.getElementById('p-trades').textContent = ps.trades||0;
+  const pwEl = document.getElementById('p-wr');
+  pwEl.textContent = (ps.win_rate||0)+'%';
+  pwEl.className = 'mc-val '+((ps.win_rate||0)>=50?'mc-green':(ps.win_rate||0)>=30?'mc-gold':'mc-red');
+  const ppEl = document.getElementById('p-pnl');
+  const pp   = ps.pnl||0;
+  ppEl.textContent = (pp>=0?'+':'')+f(pp)+'$';
+  ppEl.className   = 'mc-val '+(pp>=0?'mc-green':'mc-red');
+  document.getElementById('p-wl').textContent = `${ps.wins||0}W / ${ps.losses||0}L`;
+
+  // Equity
+  renderEquity(d.equity_curve||[], d.initial_balance||10000);
+
+  // Portfolio
+  renderPortfolio(sp.holdings||{}, sp.total||0);
+
+  // Trades
+  renderTrades(allTrades);
+  renderRecentTrades(allTrades.slice(0,10));
+
+  // Errors
+  renderErrors(d.errors||[]);
+
+  // Login logs
+  renderLoginLogs(d.login_logs||[]);
+
+  // Toasts
+  if (d.toasts) renderToasts(d.toasts);
+}
+
+function renderFuturesPositions(holdings) {
+  const el = document.getElementById('fut-holdings');
+  const keys = Object.keys(holdings);
+  if (!keys.length) { el.innerHTML=''; return; }
+  el.innerHTML = `<div style="margin-top:12px;border-top:1px solid var(--border2)">
+    <div style="padding:8px 0 4px;font-size:9px;color:var(--t2);font-family:var(--mono);text-transform:uppercase;letter-spacing:1px">Open Positions</div>
+    ${keys.map(sym=>{
+      const p = holdings[sym];
+      return `<div class="pos-row">
+        <span class="pos-sym">${sym}</span>
+        <span class="pos-side ${p.side==='long'?'pos-long':'pos-short'}">${p.side}</span>
+        <span style="font-family:var(--mono);color:var(--t2);font-size:10px">@${f(p.entry_price,4)}</span>
+        <span style="font-family:var(--mono);font-size:10px;color:var(--blue)">${f(p.current_price,4)}</span>
+        <span class="${pc(p.unrealized_pnl)}" style="font-size:11px;margin-right:auto">${sg(p.unrealized_pnl)}${f(p.unrealized_pnl)}$</span>
+        <span class="${pc(p.pnl_pct)}" style="font-size:10px">${sg(p.pnl_pct)}${p.pnl_pct}%</span>
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+
+function renderPortfolio(holdings, total) {
+  const keys = Object.keys(holdings);
+  document.getElementById('port-count').textContent = keys.length+' coins';
+  if (!keys.length) {
+    document.getElementById('port-tbody').innerHTML = '<tr><td colspan="8"><div class="empty-state"><span class="ei">💼</span><span class="et">No positions held</span></div></td></tr>';
+    return;
+  }
+  const sorted = keys.sort((a,b)=>(holdings[b].value||0)-(holdings[a].value||0));
+  document.getElementById('port-tbody').innerHTML = sorted.map(c=>{
+    const v = holdings[c];
+    const alloc = total>0 ? ((v.value/total)*100).toFixed(1) : 0;
+    const allocColor = alloc>30?'var(--orange)':alloc>20?'var(--gold)':'var(--green)';
+    return `<tr>
+      <td><div class="port-coin"><div class="coin-dot"></div><span class="coin-name">${c}</span></div></td>
+      <td class="td-mono">${v.amount}</td>
+      <td class="td-mono" style="color:var(--t2)">${f(v.buy_price,4)}</td>
+      <td class="td-mono" style="color:var(--blue)">${f(v.current_price,4)}</td>
+      <td class="td-mono" style="color:var(--gold)">${f(v.value,2)}$</td>
+      <td>${pnlHtml(v.pnl_usd)}</td>
+      <td>${pnlHtml(v.pnl_pct)}</td>
+      <td>
+        <div style="font-family:var(--mono);font-size:10px;color:${allocColor}">${alloc}%</div>
+        <div class="conc-bar"><div class="conc-fill" style="width:${Math.min(alloc,100)}%;background:${allocColor}"></div></div>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function renderRecentTrades(trades) {
+  if (!trades.length) { document.getElementById('recent-tbody').innerHTML='<tr><td colspan="9"><div class="empty-state"><span class="ei">📡</span><span class="et">Waiting for signals...</span></div></td></tr>'; return; }
+  document.getElementById('recent-tbody').innerHTML = trades.map(t=>tradeRow(t,'recent')).join('');
+}
+
+function renderTrades(trades) {
+  const fm = document.getElementById('filter-market').value;
+  const ft = document.getElementById('filter-type').value;
+  const fp = document.getElementById('filter-pair').value.toUpperCase();
+  const filtered = trades.filter(t=>
+    (!fm || t.market===fm) &&
+    (!ft || t.act===ft) &&
+    (!fp || t.pair.includes(fp))
+  );
+  document.getElementById('trade-count-info').textContent = filtered.length+' trades';
+  if (!filtered.length) { document.getElementById('all-tbody').innerHTML='<tr><td colspan="12"><div class="empty-state"><span class="ei">🔍</span><span class="et">No matching trades</span></div></td></tr>'; return; }
+  document.getElementById('all-tbody').innerHTML = filtered.map(t=>tradeRow(t,'full')).join('');
+}
+
+function tradeRow(t, mode) {
+  const isNew = !seenIds.has(t.id);
+  if (isNew) seenIds.add(t.id);
+  const mkt  = t.market==='FUTURES'?'<span class="mkt-f">F</span>':'<span class="mkt-s">S</span>';
+  const badge = tbMap[t.act] || `<span class="tb tb-sell">${t.act}</span>`;
+  const isSell = ['sell','long_close','short_close'].includes(t.act);
+  let pnlPct = '—';
+  if (isSell && t.pnl!==0 && t.total>0) {
+    const cost = (t.total||0)-(t.pnl||0);
+    if (cost>0) pnlPct = `${sg(t.pnl/cost*100)}${f(t.pnl/cost*100,2)}%`;
+  }
+  if (mode==='recent') return `<tr class="${isNew?'flash-row':''}">
+    <td class="td-muted">${t.date||'--'}</td>
+    <td class="td-muted">${t.time}</td>
+    <td>${mkt}</td>
+    <td class="td-pair">${t.pair}</td>
+    <td>${badge}</td>
+    <td class="td-price">${t.price>0?f(t.price,4):'—'}</td>
+    <td class="td-mono" style="color:var(--green)">${t.total>0?f(t.total,2)+'$':'—'}</td>
+    <td>${isSell&&t.pnl!==0?pnlHtml(t.pnl):'<span class="pnl-nil">—</span>'}</td>
+    <td class="reason-tag">${reasonMap[t.reason]||'—'}</td>
+  </tr>`;
+  return `<tr class="${isNew?'flash-row':''}">
+    <td class="td-muted">${t.date||'--'}</td>
+    <td class="td-muted">${t.time}</td>
+    <td>${mkt}</td>
+    <td class="td-pair">${t.pair}</td>
+    <td>${badge}</td>
+    <td class="td-mono">${t.amount>0?t.amount:'—'}</td>
+    <td class="td-price">${t.price>0?f(t.price,4):'—'}</td>
+    <td class="td-mono" style="color:var(--gold)">${t.total>0?f(t.total,2)+'$':'—'}</td>
+    <td>${isSell&&t.pnl!==0?pnlHtml(t.pnl):'<span class="pnl-nil">—</span>'}</td>
+    <td>${isSell&&t.pnl!==0?`<span class="${pc(t.pnl)}">${pnlPct}</span>`:'<span class="pnl-nil">—</span>'}</td>
+    <td class="reason-tag">${reasonMap[t.reason]||'—'}</td>
+    <td>${t.success?'<span style="color:var(--green);font-size:10px">✅</span>':'<span style="color:var(--red);font-size:10px" title="'+t.err+'">❌</span>'}</td>
+  </tr>`;
+}
+
+function renderErrors(errs) {
+  const el = document.getElementById('error-list');
+  if (!errs.length) { el.innerHTML='<div class="empty-state"><span class="ei">✅</span><span class="et">No errors logged</span></div>'; return; }
+  el.innerHTML = errs.map(e=>`<div style="display:flex;gap:12px;padding:10px 18px;border-bottom:1px solid var(--border2)">
+    <span style="color:var(--t3);font-size:9px;font-family:var(--mono);white-space:nowrap;margin-top:1px">${e.date} ${e.time}</span>
+    <span style="color:var(--red);font-family:var(--mono);font-size:11px;word-break:break-all">❌ ${e.msg}</span>
+  </div>`).join('');
+}
+
+function renderLoginLogs(logs) {
+  document.getElementById('login-count').textContent = logs.length+' entries';
+  if (!logs.length) { document.getElementById('login-tbody').innerHTML='<tr><td colspan="5"><div class="empty-state"><span class="ei">🔒</span><span class="et">No login history</span></div></td></tr>'; return; }
+  document.getElementById('login-tbody').innerHTML = logs.map(l=>`<tr>
+    <td class="td-muted">${l.date}</td>
+    <td class="td-muted">${l.time}</td>
+    <td class="td-mono" style="color:var(--blue)">${l.ip}</td>
+    <td><span style="font-family:var(--mono);font-size:11px;color:${l.status.includes('✅')?'var(--green)':'var(--red)'}">${l.status}</span></td>
+    <td class="td-muted" style="max-width:200px;overflow:hidden;text-overflow:ellipsis">${l.ua}</td>
+  </tr>`).join('');
+}
+
+// ══════════════════════════════════════════
+// EQUITY CHART
+// ══════════════════════════════════════════
+function renderEquity(curve, initBal) {
+  const val = initBal + curve.reduce((s,c)=>s+(c.value-initBal>0?c.value-initBal:0),0);
+  document.getElementById('eq-balance').textContent = '$'+f(curve.length?curve[curve.length-1].value:initBal);
+  if (document.getElementById('eq-bal2'))
+    document.getElementById('eq-bal2').textContent = '$'+f(curve.length?curve[curve.length-1].value:initBal);
+  ['equityCanvas','equityCanvas2'].forEach(id=>{
+    const canvas = document.getElementById(id);
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const W = canvas.offsetWidth || 600;
+    const H = canvas.offsetHeight || 200;
+    canvas.width = W * devicePixelRatio;
+    canvas.height = H * devicePixelRatio;
+    ctx.scale(devicePixelRatio, devicePixelRatio);
+    ctx.clearRect(0,0,W,H);
+    if (!curve.length) {
+      ctx.fillStyle='rgba(255,255,255,.04)';
+      ctx.fillRect(0,0,W,H);
+      ctx.fillStyle='rgba(255,255,255,.1)';
+      ctx.font='11px IBM Plex Mono';
+      ctx.textAlign='center';
+      ctx.fillText('No trades yet — equity curve will appear after first closed trade', W/2, H/2);
+      return;
+    }
+    const vals = curve.map(c=>c.value);
+    const minV = Math.min(...vals, initBal);
+    const maxV = Math.max(...vals, initBal);
+    const range = maxV-minV || 1;
+    const pad = {t:20,b:30,l:60,r:16};
+    const cW = W-pad.l-pad.r;
+    const cH = H-pad.t-pad.b;
+    const xOf = i=>pad.l + (i/(vals.length-1||1))*cW;
+    const yOf = v=>pad.t + cH - ((v-minV)/range)*cH;
+    // Grid
+    ctx.strokeStyle='rgba(255,255,255,.04)';
+    ctx.lineWidth=1;
+    for (let i=0;i<4;i++) {
+      const y=pad.t+cH*(i/3);
+      ctx.beginPath(); ctx.moveTo(pad.l,y); ctx.lineTo(pad.l+cW,y); ctx.stroke();
+      const gv = maxV-range*(i/3);
+      ctx.fillStyle='rgba(255,255,255,.18)';
+      ctx.font=`9px IBM Plex Mono`;
+      ctx.textAlign='right';
+      ctx.fillText('$'+f(gv,0), pad.l-6, y+3);
+    }
+    // Baseline
+    const baseY = yOf(initBal);
+    ctx.strokeStyle='rgba(255,255,255,.08)';
+    ctx.setLineDash([4,4]);
+    ctx.beginPath(); ctx.moveTo(pad.l,baseY); ctx.lineTo(pad.l+cW,baseY); ctx.stroke();
+    ctx.setLineDash([]);
+    // Fill gradient
+    const lastIsUp = vals[vals.length-1] >= initBal;
+    const grad = ctx.createLinearGradient(0,pad.t,0,pad.t+cH);
+    if (lastIsUp) {
+      grad.addColorStop(0,'rgba(14,203,129,.25)');
+      grad.addColorStop(1,'rgba(14,203,129,.02)');
+    } else {
+      grad.addColorStop(0,'rgba(246,70,93,.18)');
+      grad.addColorStop(1,'rgba(246,70,93,.02)');
+    }
+    ctx.beginPath();
+    ctx.moveTo(xOf(0), yOf(vals[0]));
+    vals.forEach((v,i)=>ctx.lineTo(xOf(i),yOf(v)));
+    ctx.lineTo(xOf(vals.length-1), H-pad.b);
+    ctx.lineTo(pad.l, H-pad.b);
+    ctx.closePath();
+    ctx.fillStyle = grad;
+    ctx.fill();
+    // Line
+    ctx.beginPath();
+    ctx.moveTo(xOf(0), yOf(vals[0]));
+    vals.forEach((v,i)=>ctx.lineTo(xOf(i),yOf(v)));
+    ctx.strokeStyle = lastIsUp?'var(--green)':'var(--red)';
+    ctx.lineWidth=2;
+    ctx.stroke();
+    // Last point dot
+    const lx=xOf(vals.length-1), ly=yOf(vals[vals.length-1]);
+    ctx.beginPath();
+    ctx.arc(lx,ly,4,0,Math.PI*2);
+    ctx.fillStyle=lastIsUp?'var(--green)':'var(--red)';
+    ctx.fill();
+  });
+}
+
+// ══════════════════════════════════════════
+// TOASTS
+// ══════════════════════════════════════════
+function renderToasts(toasts) {
+  if (!lastData?.settings?.toast_enabled) return;
+  toasts.forEach(t=>{
+    if (shownToasts.has(t.ts)) return;
+    shownToasts.add(t.ts);
+    showToast(t.msg, t.kind||'info');
+  });
+}
+function showToast(msg, kind='info') {
+  const c = document.getElementById('toastContainer');
+  const d = document.createElement('div');
+  d.className = `toast ${kind}`;
+  d.textContent = msg;
+  c.appendChild(d);
+  setTimeout(()=>{
+    d.style.animation='slideOut .25s ease-in forwards';
+    setTimeout(()=>d.remove(),250);
+  }, 4000);
+}
+
+// ══════════════════════════════════════════
+// STATE BADGE
+// ══════════════════════════════════════════
+function renderState(s) {
+  const b = document.getElementById('stateBadge');
+  const tb = document.getElementById('toggleBtn');
+  const eb = document.getElementById('emerBtn');
+  const rb = document.getElementById('resumeBtn');
+  if (s.emergency_stop) {
+    b.textContent='🚨 EMERGENCY'; b.className='state-badge state-emer';
+    tb.style.display='none'; rb.style.display='inline-flex'; eb.style.display='none';
+  } else if (s.calendar_paused) {
+    b.textContent='📅 Paused — Event'; b.className='state-badge state-calendar';
+    tb.textContent='⏸ Paused'; tb.className='btn btn-ghost';
+    tb.style.display='inline-flex'; rb.style.display='none'; eb.style.display='inline-flex';
+  } else if (!s.active) {
+    b.textContent='⏸ PAUSED'; b.className='state-badge state-paused';
+    tb.textContent='▶ Activate'; tb.className='btn btn-green';
+    tb.style.display='inline-flex'; rb.style.display='none'; eb.style.display='inline-flex';
+  } else {
+    b.textContent='✅ ACTIVE'; b.className='state-badge state-active';
+    tb.textContent='⏸ Pause'; tb.className='btn btn-yellow';
+    tb.style.display='inline-flex'; rb.style.display='none'; eb.style.display='inline-flex';
+  }
+}
+
+// ══════════════════════════════════════════
+// SETTINGS SYNC
+// ══════════════════════════════════════════
+function syncSettings(s) {
+  const set = (id,v)=>{ const el=document.getElementById(id); if(!el)return; el.type==='checkbox'?el.checked=!!v:el.value=v; };
+  set('s-buy-mode',s.spot_buy_mode); set('s-buy-val',s.spot_buy_value);
+  set('s-sell-r',s.spot_sell_ratio); set('s-max-pos',s.spot_max_positions);
+  set('fut-en',s.futures_enabled);   set('f-val',s.futures_value);
+  set('lev-in',s.leverage);          set('f-max-pos',s.futures_max_positions);
+  set('risk-en',s.risk_enabled);     set('trail-pct',s.trailing_stop_pct);
+  set('fsl-pct',s.fixed_stop_loss_pct);
+  set('ps-en',s.position_sizing_enabled); set('ps-pct',s.position_sizing_pct);
+  set('max-conc',s.max_concentration_pct);
+  set('dl-en',s.daily_loss_enabled); set('dl-pct',s.daily_loss_limit_pct);
+  set('sess-en',s.session_enabled);  set('sess-s',s.session_start); set('sess-e',s.session_end);
+  set('cal-en',s.calendar_enabled);  set('cal-b',s.calendar_pause_before); set('cal-a',s.calendar_resume_after);
+  set('snd-en',s.sound_enabled);     set('toast-en',s.toast_enabled);
+  set('tg-en',s.telegram_enabled);   set('tg-trade',s.telegram_on_trade);
+  set('tg-err',s.telegram_on_error); set('tg-rep',s.telegram_daily_report);
+  set('tg-time',s.telegram_report_time);
+}
+
+// ══════════════════════════════════════════
+// CONTROLS
+// ══════════════════════════════════════════
+const api = async(url,body)=>{
+  const r = await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});
+  return r.json();
+};
+async function toggleBot()       { await api('/control/toggle') }
+async function resumeBot()       { await api('/control/resume') }
+async function liquidateSpot()   { if(confirm('Liquidate ALL Spot positions?'))  await api('/liquidate') }
+async function liquidateFutures(){ if(confirm('Close ALL Futures positions?'))   await api('/liquidate/futures') }
+async function clearErrors()     { await api('/errors/clear') }
+async function ss(key,val)       { await api('/settings/update',{key,value:val}) }
+
+async function emergencyStop() {
+  if (!confirm('🚨 EMERGENCY STOP!\nThis will immediately sell ALL positions.\n\nConfirm?')) return;
+  await api('/control/emergency');
+}
+
+// ══════════════════════════════════════════
+// TABS
+// ══════════════════════════════════════════
+function switchTab(name, btn) {
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  const p = document.getElementById('tab-'+name);
+  if (p) p.classList.add('active');
+}
+
+// ══════════════════════════════════════════
+// PERIOD
+// ══════════════════════════════════════════
+function setPeriod(h, el) {
+  document.querySelectorAll('.period-tab').forEach(t=>t.classList.remove('active'));
+  el.classList.add('active');
+  ss('report_hours', h);
+}
+
+// ══════════════════════════════════════════
+// FILTERS
+// ══════════════════════════════════════════
+function filterTrades() { if (allTrades.length) renderTrades(allTrades); }
+function clearFilters() {
+  document.getElementById('filter-market').value='';
+  document.getElementById('filter-type').value='';
+  document.getElementById('filter-pair').value='';
+  filterTrades();
+}
+
+// ══════════════════════════════════════════
+// MOVERS
+// ══════════════════════════════════════════
+async function loadMovers() {
+  document.getElementById('movers-grid').innerHTML='<div class="empty-state" style="grid-column:1/-1"><span class="ei" style="opacity:.4">⏳</span><span class="et">Loading...</span></div>';
+  const data = await fetch('/movers').then(r=>r.json()).catch(()=>[]);
+  if (!data.length) {
+    document.getElementById('movers-grid').innerHTML='<div class="empty-state" style="grid-column:1/-1"><span class="ei">⚠️</span><span class="et">No data available</span></div>';
+    return;
+  }
+  document.getElementById('movers-grid').innerHTML = data.map(m=>`
+    <div class="mover-card">
+      <div class="mover-sym">${m.symbol}</div>
+      <div class="mover-pct" style="color:${m.change_pct>=0?'var(--green)':'var(--red)'}">${m.change_pct>=0?'+':''}${m.change_pct}%</div>
+      <div class="mover-info">${f(m.price,4)} USDT</div>
+      <div class="mover-info">${m.volume_m}M Vol</div>
+    </div>`).join('');
+}
+
+// ══════════════════════════════════════════
+// EXCEL EXPORT
+// ══════════════════════════════════════════
+function openModal(id) { document.getElementById(id).classList.add('open') }
+function closeModal(id){ document.getElementById(id).classList.remove('open') }
+
+function doExport() {
+  if (!lastData?.trades?.length) { alert('No trades to export'); return; }
+  const st = lastData.stats || {};
+  const rows = lastData.trades.map(t=>({
+    'Date':          t.date||'',
+    'Time':          t.time||'',
+    'Market':        t.market||'',
+    'Pair':          t.pair||'',
+    'Type':          t.act||'',
+    'Quantity':      t.amount||0,
+    'Price':         t.price||0,
+    'Total ($)':     t.total||0,
+    'PnL ($)':       t.pnl||0,
+    'Reason':        t.reason||'',
+    'Status':        t.success?'Success':'Failed',
+    'Error':         t.err||'',
+  }));
+  // Add summary sheet
+  const summary = [
+    {'Metric':'Total Trades',       'Value':st.total||0},
+    {'Metric':'Wins',               'Value':st.wins||0},
+    {'Metric':'Losses',             'Value':st.losses||0},
+    {'Metric':'Win Rate',           'Value':(st.win_rate||0)+'%'},
+    {'Metric':'Net PnL ($)',        'Value':st.total_pnl||0},
+    {'Metric':'Profit Factor',      'Value':st.profit_factor||0},
+    {'Metric':'Sharpe Ratio',       'Value':st.sharpe||0},
+    {'Metric':'Max Drawdown ($)',   'Value':st.max_drawdown||0},
+    {'Metric':'Best Trade ($)',     'Value':st.best_trade||0},
+    {'Metric':'Worst Trade ($)',    'Value':st.worst_trade||0},
+    {'Metric':'Avg Win ($)',        'Value':st.avg_win||0},
+    {'Metric':'Avg Loss ($)',       'Value':st.avg_loss||0},
+    {'Metric':'Expectancy ($)',     'Value':st.expectancy||0},
+    {'Metric':'Consecutive Wins',   'Value':st.consecutive_wins||0},
+    {'Metric':'Consecutive Losses', 'Value':st.consecutive_losses||0},
+    {'Metric':'Export Date',        'Value':new Date().toLocaleString()},
+  ];
+  const ws1 = XLSX.utils.json_to_sheet(rows);
+  const ws2 = XLSX.utils.json_to_sheet(summary);
+  ws1['!cols'] = [{wch:12},{wch:10},{wch:8},{wch:14},{wch:12},{wch:10},{wch:12},{wch:10},{wch:10},{wch:14},{wch:8},{wch:30}];
+  ws2['!cols'] = [{wch:22},{wch:16}];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb,'Trades',ws1);
+  XLSX.utils.book_append_sheet(wb,'Summary',ws2);
+  const d = new Date().toLocaleDateString('en-GB').replace(/\//g,'-');
+  XLSX.writeFile(wb,`SOVEREIGN_V8_${d}.xlsx`);
+  closeModal('excelModal');
+}
+
+// ══════════════════════════════════════════
+// CLOCK
+// ══════════════════════════════════════════
+setInterval(()=>{
+  const el = document.getElementById('clock');
+  if (el) el.textContent = new Date().toLocaleTimeString('en-US',{hour12:false});
+},1000);
+
+// ══════════════════════════════════════════
+// RESIZE: redraw charts
+// ══════════════════════════════════════════
+window.addEventListener('resize', ()=>{
+  if (lastData) renderEquity(lastData.equity_curve||[], lastData.initial_balance||10000);
+});
+</script>
+</body>
+</html>
+"""
+
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
+    port = int(os.environ.get("PORT",8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
