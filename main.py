@@ -94,8 +94,10 @@ settings = {
 active_connections: list[WebSocket] = []
 error_logs:   deque = deque(maxlen=200)
 login_logs:   deque = deque(maxlen=100)
-equity_curve: deque = deque(maxlen=2000)   # {ts, value}
-toast_queue:  deque = deque(maxlen=20)
+equity_curve:  deque = deque(maxlen=2000)   # {ts, value}
+toast_queue:   deque = deque(maxlen=20)
+trade_pairs:   deque = deque(maxlen=500)    # matched buy+sell records
+open_trades:   dict  = {}                   # pair -> open trade record
 
 
 # ══════════════════════════════════════════
@@ -453,6 +455,7 @@ class SpotBot:
                 self.buy_times[coin]   = datetime.now()
                 self._place_risk_orders(pair, amt, price)
                 action_type = "buy"
+                record_trade_pair(pair, "buy", "SPOT", price, amt, total_val, 0, "")
                 add_toast(f"🟢 BUY {coin} @ {price:,.4f}", "success")
                 if settings.get("telegram_on_trade"):
                     asyncio.create_task(send_telegram(
@@ -482,6 +485,7 @@ class SpotBot:
                 if coin in self.buy_times:   del self.buy_times[coin]
                 update_daily_loss(trade_pnl)
                 action_type = "sell"
+                record_trade_pair(pair, "sell", "SPOT", price, amt, total_val, trade_pnl, reason)
                 em   = "🟢" if trade_pnl >= 0 else "🔴"
                 sign = "+" if trade_pnl >= 0 else ""
                 add_toast(f"{em} SELL {coin}: {sign}{trade_pnl}$", "success" if trade_pnl >= 0 else "error")
@@ -604,6 +608,7 @@ class FuturesBot:
                 self.ex.create_market_buy_order(pair, amt, {"reduceOnly": False})
                 self.positions[pair] = {"side":"long","entry":price,"amt":amt}
                 self.open_times[pair] = datetime.now()
+                record_trade_pair(pair, "long_open", "FUTURES", price, amt, total_val, 0, "")
                 add_toast(f"🔵 LONG {pair} @ {price:,.4f}", "info")
                 if settings.get("telegram_on_trade"):
                     asyncio.create_task(send_telegram(f"🔵 <b>Long — {pair}</b>\n{amt} @ <code>{price:,.4f}</code> ×{settings['leverage']}x"))
@@ -617,6 +622,7 @@ class FuturesBot:
                 if pair in self.positions:  del self.positions[pair]
                 if pair in self.open_times: del self.open_times[pair]
                 update_daily_loss(trade_pnl)
+                record_trade_pair(pair, "long_close", "FUTURES", price, amt, total_val, trade_pnl, reason)
                 sign = "+" if trade_pnl >= 0 else ""
                 em   = "🟢" if trade_pnl >= 0 else "🔴"
                 add_toast(f"{em} Long Close {pair}: {sign}{trade_pnl}$", "success" if trade_pnl >= 0 else "error")
@@ -627,6 +633,7 @@ class FuturesBot:
                 self.ex.create_market_sell_order(pair, amt, {"reduceOnly": False})
                 self.positions[pair] = {"side":"short","entry":price,"amt":amt}
                 self.open_times[pair] = datetime.now()
+                record_trade_pair(pair, "short_open", "FUTURES", price, amt, total_val, 0, "")
                 add_toast(f"🟣 SHORT {pair} @ {price:,.4f}", "info")
                 if settings.get("telegram_on_trade"):
                     asyncio.create_task(send_telegram(f"🟣 <b>Short — {pair}</b>\n{amt} @ <code>{price:,.4f}</code> ×{settings['leverage']}x"))
@@ -640,6 +647,7 @@ class FuturesBot:
                 if pair in self.positions:  del self.positions[pair]
                 if pair in self.open_times: del self.open_times[pair]
                 update_daily_loss(trade_pnl)
+                record_trade_pair(pair, "short_close", "FUTURES", price, amt, total_val, trade_pnl, reason)
                 sign = "+" if trade_pnl >= 0 else ""
                 em   = "🟢" if trade_pnl >= 0 else "🔴"
                 add_toast(f"{em} Short Close {pair}: {sign}{trade_pnl}$", "success" if trade_pnl >= 0 else "error")
@@ -696,8 +704,154 @@ spot_bot    = SpotBot()
 futures_bot = FuturesBot()
 
 
+def record_trade_pair(pair: str, act: str, market: str, price: float,
+                       amt: float, total: float, pnl: float, reason: str,
+                       buy_price: float = 0.0, buy_time: str = "", buy_date: str = ""):
+    """
+    يربط عمليات الشراء والبيع معاً في سجل واحد.
+    - عند الشراء  → يحفظ في open_trades انتظاراً للبيع
+    - عند البيع   → يكمل السجل ويحركه إلى trade_pairs
+    - العملات المفتوحة تظهر أيضاً في الجدول بحالة OPEN
+    """
+    now_time = datetime.now().strftime("%H:%M:%S")
+    now_date = datetime.now().strftime("%d/%m/%Y")
+    key = f"{market}:{pair}"
+
+    is_open  = act in ("buy", "long_open", "short_open")
+    is_close = act in ("sell", "long_close", "short_close")
+
+    if is_open:
+        open_trades[key] = {
+            "id":         int(datetime.now().timestamp() * 1000),
+            "pair":       pair,
+            "market":     market,
+            "side":       act,
+            "buy_price":  price,
+            "buy_amount": amt,
+            "buy_total":  total,
+            "buy_time":   now_time,
+            "buy_date":   now_date,
+            "status":     "OPEN",
+        }
+
+    elif is_close and key in open_trades:
+        op = open_trades.pop(key)
+        bp   = op["buy_price"]
+        dur_sec = 0
+        try:
+            bt  = datetime.strptime(f"{op['buy_date']} {op['buy_time']}", "%d/%m/%Y %H:%M:%S")
+            dur_sec = int((datetime.now() - bt).total_seconds())
+        except:
+            pass
+        hrs  = dur_sec // 3600
+        mins = (dur_sec % 3600) // 60
+        dur_str = f"{hrs}h {mins}m" if hrs else f"{mins}m"
+
+        pnl_pct = round(((price - bp) / bp * 100), 2) if bp > 0 else 0.0
+        if act == "short_close":
+            pnl_pct = round(((bp - price) / bp * 100), 2) if bp > 0 else 0.0
+
+        trade_pairs.appendleft({
+            "id":         op["id"],
+            "pair":       pair,
+            "market":     market,
+            "side":       op["side"],
+            "buy_price":  round(bp, 6),
+            "buy_amount": round(op["buy_amount"], 6),
+            "buy_total":  round(op["buy_total"], 2),
+            "buy_time":   op["buy_time"],
+            "buy_date":   op["buy_date"],
+            "sell_price": round(price, 6),
+            "sell_total": round(total, 2),
+            "sell_time":  now_time,
+            "sell_date":  now_date,
+            "pnl":        round(pnl, 2),
+            "pnl_pct":    pnl_pct,
+            "reason":     reason,
+            "duration":   dur_str,
+            "status":     "CLOSED",
+        })
+
+    elif is_close and key not in open_trades:
+        # بيع بدون شراء مسجل (نادر) — نسجله ببيانات جزئية
+        trade_pairs.appendleft({
+            "id":         int(datetime.now().timestamp() * 1000),
+            "pair":       pair,
+            "market":     market,
+            "side":       act,
+            "buy_price":  buy_price,
+            "buy_amount": amt,
+            "buy_total":  0,
+            "buy_time":   buy_time or "—",
+            "buy_date":   buy_date or "—",
+            "sell_price": round(price, 6),
+            "sell_total": round(total, 2),
+            "sell_time":  now_time,
+            "sell_date":  now_date,
+            "pnl":        round(pnl, 2),
+            "pnl_pct":    round(((price - buy_price) / buy_price * 100), 2) if buy_price > 0 else 0,
+            "reason":     reason,
+            "duration":   "—",
+            "status":     "CLOSED",
+        })
+
+
+def get_all_trade_pairs() -> list:
+    """يُعيد كل الصفقات: المغلقة + المفتوحة حالياً (live unrealized)"""
+    closed = list(trade_pairs)
+    # أضف المفتوحة من open_trades
+    live = []
+    for key, op in open_trades.items():
+        # نحسب PnL الحالي إذا أمكن
+        try:
+            pair   = op["pair"]
+            mkt    = op["market"]
+            ticker = spot_bot.ex.fetch_ticker(pair) if mkt == "SPOT" else futures_bot.ex.fetch_ticker(pair)
+            cur    = float(ticker["last"])
+            bp     = op["buy_price"]
+            amt    = op["buy_amount"]
+            upnl   = round((cur - bp) * amt, 2)
+            upct   = round(((cur - bp) / bp * 100), 2) if bp > 0 else 0.0
+        except:
+            cur  = op["buy_price"]
+            upnl = 0.0
+            upct = 0.0
+        try:
+            bt      = datetime.strptime(f"{op['buy_date']} {op['buy_time']}", "%d/%m/%Y %H:%M:%S")
+            dur_sec = int((datetime.now() - bt).total_seconds())
+            hrs  = dur_sec // 3600
+            mins = (dur_sec % 3600) // 60
+            dur_str = f"{hrs}h {mins}m" if hrs else f"{mins}m"
+        except:
+            dur_str = "—"
+
+        live.append({
+            "id":           op["id"],
+            "pair":         op["pair"],
+            "market":       op["market"],
+            "side":         op["side"],
+            "buy_price":    round(op["buy_price"], 6),
+            "buy_amount":   round(op["buy_amount"], 6),
+            "buy_total":    round(op["buy_total"], 2),
+            "buy_time":     op["buy_time"],
+            "buy_date":     op["buy_date"],
+            "sell_price":   round(cur, 6),   # السعر الحالي
+            "sell_total":   0,
+            "sell_time":    "—",
+            "sell_date":    "—",
+            "pnl":          upnl,
+            "pnl_pct":      upct,
+            "reason":       "—",
+            "duration":     dur_str,
+            "status":       "OPEN",
+        })
+
+    return live + closed   # المفتوحة أولاً
+
+
 # ══════════════════════════════════════════
 # Top Movers
+
 # ══════════════════════════════════════════
 async def get_top_movers(limit: int = 10) -> list:
     try:
@@ -753,7 +907,8 @@ async def get_full_state() -> dict:
         "errors":       list(error_logs)[:100],
         "login_logs":   list(login_logs)[:50],
         "daily_loss":   {"current": round(settings["daily_loss_current"],2), "limit": round(INITIAL_BALANCE*settings["daily_loss_limit_pct"]/100,2)},
-        "equity_curve": eq[-200:],
+        "equity_curve":   eq[-200:],
+        "trade_pairs":    get_all_trade_pairs(),
         "toasts":       list(toast_queue),
         "initial_balance": INITIAL_BALANCE,
     }
@@ -1377,6 +1532,17 @@ td { padding:11px 14px; font-size:12px; white-space:nowrap; text-align:left }
 .conc-bar { height:3px; background:var(--bg3); border-radius:2px; margin-top:4px; overflow:hidden }
 .conc-fill { height:100%; border-radius:2px }
 
+/* ─── Trade Pairs ─── */
+.tp-open-row   { background:rgba(24,144,255,.03) }
+.tp-win-row    { background:rgba(14,203,129,.025) }
+.tp-loss-row   { background:rgba(246,70,93,.025) }
+.tp-status-open   { background:var(--blue-bg); color:var(--blue); border:1px solid var(--blue-br); font-family:var(--mono); font-size:9px; padding:2px 8px; border-radius:4px; font-weight:700 }
+.tp-status-closed-win  { background:var(--green-bg); color:var(--green); border:1px solid var(--green-br); font-family:var(--mono); font-size:9px; padding:2px 8px; border-radius:4px; font-weight:700 }
+.tp-status-closed-loss { background:var(--red-bg); color:var(--red); border:1px solid var(--red-br); font-family:var(--mono); font-size:9px; padding:2px 8px; border-radius:4px; font-weight:700 }
+.tp-live-price { color:var(--blue); font-family:var(--mono); font-size:11px }
+.tp-live-price::after { content:" ●"; font-size:7px; animation:blink 1.5s infinite }
+.tp-arrow { font-size:10px; color:var(--t3); margin:0 3px }
+
 /* ─── Divider ─── */
 .divider { height:1px; background:var(--border); margin:14px 0 }
 
@@ -1453,6 +1619,7 @@ td { padding:11px 14px; font-size:12px; white-space:nowrap; text-align:left }
       <button class="tab" onclick="switchTab('analytics',this)">📈 Analytics</button>
       <button class="tab" onclick="switchTab('portfolio',this)">💼 Portfolio</button>
       <button class="tab" onclick="switchTab('trades',this)">📋 Trades</button>
+      <button class="tab" onclick="switchTab('tradepairs',this)">🔗 Trade Pairs</button>
       <button class="tab" onclick="switchTab('settings',this)">⚙️ Settings</button>
       <button class="tab" onclick="switchTab('movers',this);loadMovers()">🔥 Movers</button>
       <button class="tab" onclick="switchTab('security',this)">🔒 Security</button>
@@ -1614,6 +1781,69 @@ td { padding:11px 14px; font-size:12px; white-space:nowrap; text-align:left }
         </div>
       </div>
     </div><!-- /portfolio -->
+
+    <!-- ══════ TRADE PAIRS ══════ -->
+    <div id="tab-tradepairs" class="panel">
+
+      <!-- Summary Bar -->
+      <div class="g4 mb16" id="tp-summary-cards">
+        <div class="metric-card"><div class="mc-icon">🔗</div><div class="mc-lbl">Total Pairs</div><div class="mc-val mc-gold" id="tp-total">0</div><div class="mc-sub">All trades</div></div>
+        <div class="metric-card"><div class="mc-icon">🟢</div><div class="mc-lbl">Open Now</div><div class="mc-val mc-blue" id="tp-open">0</div><div class="mc-sub">Unrealized</div></div>
+        <div class="metric-card"><div class="mc-icon">✅</div><div class="mc-lbl">Closed</div><div class="mc-val mc-green" id="tp-closed">0</div><div class="mc-sub">Realized</div></div>
+        <div class="metric-card"><div class="mc-icon">💰</div><div class="mc-lbl">Realized PnL</div><div class="mc-val" id="tp-pnl">$0</div><div class="mc-sub">Closed only</div></div>
+      </div>
+
+      <!-- Filter Bar -->
+      <div class="abar mb12">
+        <select class="sel-input" id="tp-filter-market" onchange="renderTradePairs()">
+          <option value="">All Markets</option>
+          <option value="SPOT">Spot</option>
+          <option value="FUTURES">Futures</option>
+        </select>
+        <select class="sel-input" id="tp-filter-status" onchange="renderTradePairs()">
+          <option value="">All Status</option>
+          <option value="OPEN">Open 🟢</option>
+          <option value="CLOSED">Closed ✅</option>
+        </select>
+        <input class="n-input" type="text" id="tp-filter-pair" placeholder="Pair..." oninput="renderTradePairs()" style="width:100px;text-align:left">
+        <select class="sel-input" id="tp-filter-result" onchange="renderTradePairs()">
+          <option value="">All Results</option>
+          <option value="win">Profit ✅</option>
+          <option value="loss">Loss ❌</option>
+        </select>
+        <button class="btn btn-ghost" onclick="clearTpFilters()">Clear</button>
+        <div class="adiv"></div>
+        <span style="font-family:var(--mono);font-size:10px;color:var(--t2)" id="tp-count-info">-- pairs</span>
+      </div>
+
+      <!-- Table -->
+      <div class="card">
+        <div class="tbl-wrap">
+          <table id="tp-table">
+            <thead><tr>
+              <th>Status</th>
+              <th>Market</th>
+              <th>Pair</th>
+              <th>Side</th>
+              <th>📅 Buy Date</th>
+              <th>Buy Price</th>
+              <th>Buy Total</th>
+              <th>📅 Sell Date</th>
+              <th>Sell Price</th>
+              <th>Change</th>
+              <th>PnL $</th>
+              <th>PnL %</th>
+              <th>Duration</th>
+              <th>Reason</th>
+            </tr></thead>
+            <tbody id="tp-tbody">
+              <tr><td colspan="14"><div class="empty-state"><span class="ei">🔗</span><span class="et">No trade pairs yet — pairs appear after first buy signal</span></div></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </div><!-- /tradepairs -->
 
     <!-- ══════ TRADES ══════ -->
     <div id="tab-trades" class="panel">
@@ -1834,6 +2064,7 @@ function connect() {
   ws.onmessage = e=>{
     lastData = JSON.parse(e.data);
     allTrades = lastData.trades || [];
+    allTradePairs = lastData.trade_pairs || [];
     render(lastData);
   };
   ws.onclose = ()=>{
@@ -1987,6 +2218,9 @@ function render(d) {
   // Trades
   renderTrades(allTrades);
   renderRecentTrades(allTrades.slice(0,10));
+
+  // Trade Pairs
+  renderTradePairs();
 
   // Errors
   renderErrors(d.errors||[]);
@@ -2281,6 +2515,120 @@ function syncSettings(s) {
   set('tg-en',s.telegram_enabled);   set('tg-trade',s.telegram_on_trade);
   set('tg-err',s.telegram_on_error); set('tg-rep',s.telegram_daily_report);
   set('tg-time',s.telegram_report_time);
+}
+
+// ══════════════════════════════════════════
+// TRADE PAIRS
+// ══════════════════════════════════════════
+let allTradePairs = [];
+
+function renderTradePairs() {
+  const fm  = document.getElementById('tp-filter-market')?.value || '';
+  const fs  = document.getElementById('tp-filter-status')?.value || '';
+  const fp  = (document.getElementById('tp-filter-pair')?.value || '').toUpperCase();
+  const fr  = document.getElementById('tp-filter-result')?.value || '';
+
+  const filtered = allTradePairs.filter(t =>
+    (!fm || t.market === fm) &&
+    (!fs || t.status === fs) &&
+    (!fp || t.pair.includes(fp)) &&
+    (!fr || (fr === 'win' ? t.pnl > 0 : t.pnl < 0))
+  );
+
+  // Summary cards
+  const opens   = allTradePairs.filter(t=>t.status==='OPEN');
+  const closed  = allTradePairs.filter(t=>t.status==='CLOSED');
+  const realPnl = closed.reduce((s,t)=>s+t.pnl,0);
+  if (document.getElementById('tp-total'))  document.getElementById('tp-total').textContent  = allTradePairs.length;
+  if (document.getElementById('tp-open'))   document.getElementById('tp-open').textContent   = opens.length;
+  if (document.getElementById('tp-closed')) document.getElementById('tp-closed').textContent = closed.length;
+  if (document.getElementById('tp-pnl')) {
+    const el = document.getElementById('tp-pnl');
+    el.textContent = (realPnl>=0?'+':'')+f(realPnl)+'$';
+    el.className = 'mc-val '+(realPnl>=0?'mc-green':'mc-red');
+  }
+
+  if (document.getElementById('tp-count-info'))
+    document.getElementById('tp-count-info').textContent = filtered.length+' pairs';
+
+  const tbody = document.getElementById('tp-tbody');
+  if (!tbody) return;
+
+  if (!filtered.length) {
+    tbody.innerHTML = '<tr><td colspan="14"><div class="empty-state"><span class="ei">🔗</span><span class="et">No trade pairs match filters</span></div></td></tr>';
+    return;
+  }
+
+  const reasonMap2 = {stop_loss:'🛑 Stop Loss', peak_exit:'🎯 Peak', trailing_stop:'📉 Trail', '—':'—', '':'—'};
+  const sideMap = {
+    buy:'<span class="tb tb-buy">BUY</span>',
+    long_open:'<span class="tb tb-long">LONG</span>',
+    short_open:'<span class="tb tb-short">SHORT</span>',
+  };
+
+  tbody.innerHTML = filtered.map(t => {
+    const isOpen   = t.status === 'OPEN';
+    const isWin    = !isOpen && t.pnl > 0;
+    const isLoss   = !isOpen && t.pnl < 0;
+    const rowClass = isOpen ? 'tp-open-row' : isWin ? 'tp-win-row' : 'tp-loss-row';
+
+    const statusBadge = isOpen
+      ? '<span class="tp-status-open">🟢 OPEN</span>'
+      : isWin
+        ? '<span class="tp-status-closed-win">✅ WIN</span>'
+        : '<span class="tp-status-closed-loss">❌ LOSS</span>';
+
+    const mkt = t.market==='FUTURES'
+      ? '<span class="mkt-f">F</span>'
+      : '<span class="mkt-s">S</span>';
+
+    const sellPriceHtml = isOpen
+      ? `<span class="tp-live-price">${f(t.sell_price,4)}</span>`
+      : `<span style="color:var(--red);font-family:var(--mono)">${f(t.sell_price,4)}</span>`;
+
+    const sellDateHtml = isOpen
+      ? '<span style="color:var(--blue);font-size:10px;font-family:var(--mono)">Live ●</span>'
+      : `<div style="font-family:var(--mono);font-size:10px">${t.sell_date}</div><div style="font-size:9px;color:var(--t2);font-family:var(--mono)">${t.sell_time}</div>`;
+
+    // Price change direction arrow
+    const diff = t.sell_price - t.buy_price;
+    const arrow = diff > 0
+      ? '<span style="color:var(--green)">▲</span>'
+      : diff < 0
+        ? '<span style="color:var(--red)">▼</span>'
+        : '<span style="color:var(--t3)">━</span>';
+
+    const pnlClass = t.pnl > 0 ? 'pnl-pos' : t.pnl < 0 ? 'pnl-neg' : 'pnl-nil';
+    const pnlSign  = t.pnl > 0 ? '+' : '';
+
+    return `<tr class="${rowClass}">
+      <td>${statusBadge}</td>
+      <td>${mkt}</td>
+      <td class="td-pair">${t.pair}</td>
+      <td>${sideMap[t.side]||t.side}</td>
+      <td>
+        <div style="font-family:var(--mono);font-size:10px">${t.buy_date}</div>
+        <div style="font-size:9px;color:var(--t2);font-family:var(--mono)">${t.buy_time}</div>
+      </td>
+      <td style="color:var(--green);font-family:var(--mono)">${f(t.buy_price,4)}</td>
+      <td style="color:var(--gold);font-family:var(--mono)">${t.buy_total>0?f(t.buy_total,2)+'$':'—'}</td>
+      <td>${sellDateHtml}</td>
+      <td>${sellPriceHtml}</td>
+      <td style="text-align:center">${arrow}</td>
+      <td><span class="${pnlClass}" style="font-size:13px;font-weight:700">${pnlSign}${f(t.pnl,2)}$</span></td>
+      <td><span class="${pnlClass}">${pnlSign}${t.pnl_pct}%</span></td>
+      <td style="color:var(--t2);font-family:var(--mono);font-size:10px">${t.duration}</td>
+      <td style="color:var(--t2);font-size:11px">${reasonMap2[t.reason]||t.reason||'—'}</td>
+    </tr>`;
+  }).join('');
+}
+
+function clearTpFilters() {
+  ['tp-filter-market','tp-filter-status','tp-filter-result'].forEach(id=>{
+    const el=document.getElementById(id); if(el) el.value='';
+  });
+  const pp=document.getElementById('tp-filter-pair'); if(pp) pp.value='';
+  renderTradePairs();
 }
 
 // ══════════════════════════════════════════
