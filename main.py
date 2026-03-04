@@ -404,6 +404,19 @@ class SpotBot:
     def _place_risk_orders(self, pair: str, amt: float, buy_price: float):
         if not settings.get("risk_enabled"):
             return
+        # إلغاء أوامر Algo المفتوحة أولاً لتجنب MAX_NUM_ALGO_ORDERS
+        try:
+            open_orders = self.ex.fetch_open_orders(pair)
+            for o in open_orders:
+                otype = str(o.get("type","")).lower()
+                if any(x in otype for x in ("stop","trailing","algo")):
+                    try:
+                        self.ex.cancel_order(o["id"], pair)
+                    except:
+                        pass
+        except Exception as e:
+            log_error(f"Cancel orders ({pair}): {e}", notify=False)
+        # وضع Stop Loss الجديد
         try:
             sl = round(buy_price * (1 - settings["fixed_stop_loss_pct"] / 100), 6)
             self.ex.create_order(pair, "stop_loss_limit", "sell", amt, sl, {"stopPrice": sl})
@@ -465,14 +478,32 @@ class SpotBot:
                         f"💵 Total: <code>{total_val}$</code>"
                     ))
             elif side in ("sell","long_close"):
+                # ─── جلب الرصيد الحقيقي من Binance مباشرة ───
+                # المحاولة 1: fetch_balance
                 bal   = self.ex.fetch_balance()
                 c_bal = float(bal["total"].get(coin, 0.0))
+                # المحاولة 2: free balance فقط (أكثر دقة)
+                if c_bal < 0.000001:
+                    c_bal = float(bal.get("free", {}).get(coin, 0.0))
+                # المحاولة 3: من الذاكرة الداخلية (fallback)
                 if c_bal < 0.000001:
                     c_bal = self.buy_amounts.get(coin, 0.0)
+                # المحاولة 4: إعادة جلب بعد تأخير (Testnet lag)
                 if c_bal < 0.000001:
-                    raise Exception(f"No {coin} balance")
+                    import time; time.sleep(1.5)
+                    bal2  = self.ex.fetch_balance()
+                    c_bal = float(bal2["total"].get(coin, 0.0))
+                if c_bal < 0.000001:
+                    raise Exception(f"No {coin} balance — tried 4 methods")
                 amt       = float(self.ex.amount_to_precision(pair, c_bal * settings["spot_sell_ratio"]))
                 total_val = round(amt * price, 2)
+                # إلغاء أوامر Stop/Algo المفتوحة قبل البيع (تحرير الرصيد المحجوز)
+                try:
+                    open_orders = self.ex.fetch_open_orders(pair)
+                    for o in open_orders:
+                        try: self.ex.cancel_order(o["id"], pair)
+                        except: pass
+                except: pass
                 self.ex.create_market_sell_order(pair, amt)
                 buy_p     = self.buy_prices.get(coin, price)
                 trade_pnl = round((price - buy_p) * amt, 2)
