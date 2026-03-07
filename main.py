@@ -2030,50 +2030,70 @@ td { padding:11px 14px; font-size:12px; white-space:nowrap; text-align:left }
 
   </div><!-- /wrap -->
 
-    <!-- ══════ AI AGENTS ══════ -->
+    <!-- AI AGENTS PANEL -->
     <div id="tab-agents" class="panel">
 
-      <!-- Status Bar -->
       <div class="abar mb16">
-        <span style="font-family:var(--mono);font-size:10px;color:var(--t2)">🤖 Sovereign Agents — Real-time Intelligence</span>
+        <span style="font-family:var(--mono);font-size:10px;color:var(--t2)">🤖 Sovereign Agents — Intelligence Hub</span>
         <button class="btn btn-blue" onclick="loadAgents()">🔄 Refresh</button>
         <span style="font-family:var(--mono);font-size:10px;color:var(--t3)" id="agents-updated"></span>
       </div>
 
-      <!-- Agent Health Cards -->
+      <!-- Agent Health -->
       <div class="g6 mb16" id="agent-health-grid">
-        <div class="metric-card"><div class="mc-lbl">Loading...</div><div class="mc-val mc-muted">--</div></div>
+        <div class="metric-card"><div class="mc-lbl">Loading...</div></div>
       </div>
 
-      <!-- Market Intelligence + Risk -->
-      <div class="g2 mb16">
+      <!-- Optimizer Running Bar -->
+      <div class="card mb16" id="optimizer-status-card" style="display:none">
+        <div class="card-head">
+          <span class="card-title">⚙️ Optimizer Running...</span>
+          <span class="card-badge badge-gold" id="opt-progress">0%</span>
+        </div>
+        <div style="padding:10px 20px">
+          <div class="dl-bar"><div id="opt-bar" class="dl-fill" style="width:0;background:var(--gold);transition:width 1s"></div></div>
+          <div style="font-family:var(--mono);font-size:10px;color:var(--t2);margin-top:6px" id="opt-symbol">Analyzing...</div>
+        </div>
+      </div>
 
-        <!-- Market Signals -->
+      <!-- Optimizer Results -->
+      <div class="card mb16">
+        <div class="card-head">
+          <span class="card-title">🎯 Optimizer Results — Best Settings Per Coin</span>
+          <span class="card-badge badge-gold" id="opt-last-run">Not run yet</span>
+        </div>
+        <div id="opt-results-body" style="padding:16px 20px">
+          <div class="empty-state"><span class="ei">⚙️</span><span class="et">Optimizer runs every 24h — results appear here</span></div>
+        </div>
+      </div>
+
+      <!-- Market Signals + Risk -->
+      <div class="g2 mb16">
         <div class="card">
           <div class="card-head"><span class="card-title">📊 Market Signals</span><span class="card-badge badge-gold" id="ag-market-regime">--</span></div>
           <div id="ag-signals-body" style="padding:16px 20px">
-            <div class="empty-state"><span class="ei">⏳</span><span class="et">Loading signals...</span></div>
+            <div class="empty-state"><span class="ei">⏳</span><span class="et">Loading...</span></div>
           </div>
         </div>
-
-        <!-- Risk Dashboard -->
         <div class="card">
           <div class="card-head"><span class="card-title">🛡️ Risk Monitor</span><span class="card-badge" id="ag-risk-badge">--</span></div>
           <div id="ag-risk-body" style="padding:16px 20px">
-            <div class="empty-state"><span class="ei">⏳</span><span class="et">Loading risk data...</span></div>
+            <div class="empty-state"><span class="ei">⏳</span><span class="et">Loading...</span></div>
           </div>
         </div>
-
       </div>
 
-      <!-- Recent Agent Events -->
+      <!-- Agent Events -->
       <div class="card">
-        <div class="card-head"><span class="card-title">⚡ Recent Agent Events</span><span class="card-badge badge-blue" id="ag-events-count">0 events</span></div>
+        <div class="card-head">
+          <span class="card-title">⚡ Agent Events</span>
+          <span class="card-badge badge-blue" id="ag-events-count">0</span>
+        </div>
         <div class="tbl-wrap">
           <table>
             <thead><tr><th>Time</th><th>Agent</th><th>Type</th><th>Message</th><th>Priority</th></tr></thead>
             <tbody id="ag-events-tbody">
-              <tr><td colspan="5"><div class="empty-state"><span class="ei">📡</span><span class="et">No events yet</span></div></td></tr>
+              <tr><td colspan="5"><div class="empty-state"><span class="ei">📡</span><span class="et">No events</span></div></td></tr>
             </tbody>
           </table>
         </div>
@@ -2845,157 +2865,226 @@ setInterval(()=>{
   if (el) el.textContent = new Date().toLocaleTimeString('en-US',{hour12:false});
 },1000);
 
-// ══════════════════════════════════════════
-// AI AGENTS
-// ══════════════════════════════════════════
+// AI AGENTS + OPTIMIZER
 const AGENTS_URL = 'https://sovereign-agents.onrender.com';
 
 async function loadAgents() {
   try {
     document.getElementById('agents-updated').textContent = 'Loading...';
-    const data = await fetch(AGENTS_URL + '/api/agents').then(r => r.json());
-    renderAgents(data);
+    const [agData, optData] = await Promise.all([
+      fetch(AGENTS_URL + '/api/agents').then(r=>r.json()).catch(()=>null),
+      fetch(AGENTS_URL + '/api/optimizer').then(r=>r.json()).catch(()=>null),
+    ]);
+    if (agData)  renderAgentHealth(agData);
+    if (agData)  renderMarketSignals(agData);
+    if (agData)  renderRisk(agData);
+    if (agData)  renderEvents(agData);
+    if (optData) renderOptimizerResults(optData);
     document.getElementById('agents-updated').textContent = 'Updated: ' + new Date().toLocaleTimeString();
   } catch(e) {
-    document.getElementById('agents-updated').textContent = '❌ Connection failed';
+    document.getElementById('agents-updated').textContent = 'Error: ' + e.message;
   }
 }
 
-function renderAgents(data) {
-  const health  = data.health || {};
-  const metrics = data.metrics || {};
-  const snap    = metrics.dashboard_snapshot || {};
-
-  // ── Agent Health Cards ──
-  const agentNames = {
-    execution_quality:  { icon:'⚡', label:'Execution' },
-    market_intelligence:{ icon:'📊', label:'Market Intel' },
-    risk_management:    { icon:'🛡️', label:'Risk Mgmt' },
-    audit_backtesting:  { icon:'📋', label:'Audit' },
-    meta_supervisor:    { icon:'🧠', label:'Meta Super' },
-    orchestrator:       { icon:'🎯', label:'Orchestrator' },
+function renderAgentHealth(data) {
+  const health = data.health || {};
+  const names = {
+    execution_quality:   {icon:'⚡', label:'Execution'},
+    market_intelligence: {icon:'📊', label:'Market Intel'},
+    risk_management:     {icon:'🛡️', label:'Risk Mgmt'},
+    audit_backtesting:   {icon:'📋', label:'Audit'},
+    meta_supervisor:     {icon:'🧠', label:'Meta Super'},
+    orchestrator:        {icon:'🎯', label:'Orchestrator'},
   };
-
-  const grid = document.getElementById('agent-health-grid');
-  grid.innerHTML = Object.entries(agentNames).map(([key, info]) => {
-    const h = health[key] || {};
-    const ok = h.healthy;
-    const ago = h.seconds_ago ? Math.round(h.seconds_ago) + 's ago' : '--';
-    return `<div class="metric-card" style="border-top:2px solid ${ok ? 'var(--green)' : 'var(--red)'}">
-      <div class="mc-icon">${info.icon}</div>
-      <div class="mc-lbl">${info.label}</div>
-      <div class="mc-val" style="font-size:14px;color:${ok ? 'var(--green)' : 'var(--red)'}">${ok ? '✅ Online' : '❌ Offline'}</div>
-      <div class="mc-sub">${ago}</div>
-    </div>`;
-  }).join('');
-
-  // ── Market Signals ──
-  const signals = metrics.market_intelligence?.strategy_signals || {};
-  const market  = snap.market || {};
-  const sigBody = document.getElementById('ag-signals-body');
-  const sigKeys = Object.keys(signals);
-
-  if (!sigKeys.length) {
-    sigBody.innerHTML = '<div class="empty-state"><span class="ei">📡</span><span class="et">No signals yet</span></div>';
-  } else {
-    const regimes = {trending_up:'🟢 Trending Up', trending_down:'🔴 Trending Down', ranging:'↔️ Ranging', volatile:'⚠️ Volatile'};
-    document.getElementById('ag-market-regime').textContent = Object.values(market).map(m => m.regime).join(' | ') || '--';
-
-    sigBody.innerHTML = sigKeys.map(sym => {
-      const s = signals[sym];
-      const m = market[sym] || {};
-      const stColor = s.supertrend?.includes('صاعد') ? 'var(--green)' : 'var(--red)';
-      const sqColor = s.squeeze?.includes('انطلق') ? 'var(--gold)' : 'var(--t2)';
-      const mfiColor = s.mfi > 70 ? 'var(--red)' : s.mfi > 50 ? 'var(--green)' : 'var(--t2)';
-      const htfColor = s.htf?.includes('✅') ? 'var(--green)' : 'var(--red)';
-      const regime = regimes[m.regime] || m.regime || '--';
-      const coin = sym.replace('USDT', '');
-      return `<div style="padding:12px 0;border-bottom:1px solid var(--border2)">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-          <span style="font-family:var(--mono);font-weight:700;font-size:14px">${coin}/USDT</span>
-          <span style="font-size:11px;color:var(--t2)">${regime}</span>
-        </div>
-        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px">
-          <div style="background:var(--bg2);border-radius:6px;padding:6px 8px;text-align:center">
-            <div style="font-size:8px;color:var(--t3);font-family:var(--mono);margin-bottom:3px">ST</div>
-            <div style="font-size:10px;color:${stColor};font-family:var(--mono)">${s.supertrend?.includes('صاعد') ? '🟢 UP' : '🔴 DN'}</div>
-          </div>
-          <div style="background:var(--bg2);border-radius:6px;padding:6px 8px;text-align:center">
-            <div style="font-size:8px;color:var(--t3);font-family:var(--mono);margin-bottom:3px">SQ</div>
-            <div style="font-size:10px;color:${sqColor};font-family:var(--mono)">${s.squeeze?.includes('انطلق') ? '🔥 FIRE' : '🔒 LOCK'}</div>
-          </div>
-          <div style="background:var(--bg2);border-radius:6px;padding:6px 8px;text-align:center">
-            <div style="font-size:8px;color:var(--t3);font-family:var(--mono);margin-bottom:3px">MFI</div>
-            <div style="font-size:10px;color:${mfiColor};font-family:var(--mono)">${s.mfi?.toFixed(1) || '--'}</div>
-          </div>
-          <div style="background:var(--bg2);border-radius:6px;padding:6px 8px;text-align:center">
-            <div style="font-size:8px;color:var(--t3);font-family:var(--mono);margin-bottom:3px">HTF</div>
-            <div style="font-size:10px;color:${htfColor};font-family:var(--mono)">${s.htf?.includes('✅') ? '✅ OK' : '❌ NO'}</div>
-          </div>
-        </div>
+  document.getElementById('agent-health-grid').innerHTML =
+    Object.entries(names).map(([k, info]) => {
+      const h  = health[k] || {};
+      const ok = h.healthy;
+      const ago = h.seconds_ago ? Math.round(h.seconds_ago)+'s' : '--';
+      return `<div class="metric-card" style="border-top:2px solid ${ok?'var(--green)':'var(--red)'}">
+        <div class="mc-icon">${info.icon}</div>
+        <div class="mc-lbl">${info.label}</div>
+        <div class="mc-val" style="font-size:14px;color:${ok?'var(--green)':'var(--red)'}">${ok?'✅ ON':'❌ OFF'}</div>
+        <div class="mc-sub">${ago} ago</div>
       </div>`;
     }).join('');
+}
+
+function renderOptimizerResults(data) {
+  const status  = data.status  || {};
+  const results = data.results || {};
+  const card = document.getElementById('optimizer-status-card');
+  if (status.running) {
+    card.style.display = '';
+    const pct = status.progress || 0;
+    document.getElementById('opt-progress').textContent = pct + '%';
+    document.getElementById('opt-bar').style.width      = pct + '%';
+    document.getElementById('opt-symbol').textContent   = 'Analyzing: ' + (status.current_symbol || '...');
+  } else {
+    card.style.display = 'none';
   }
+  if (status.last_run) {
+    document.getElementById('opt-last-run').textContent =
+      'Last: ' + new Date(status.last_run * 1000).toLocaleString();
+  }
+  const body = document.getElementById('opt-results-body');
+  const keys = Object.keys(results);
+  if (!keys.length) {
+    body.innerHTML = '<div class="empty-state"><span class="ei">⚙️</span><span class="et">Optimizer runs every 24h — results appear here</span></div>';
+    return;
+  }
+  body.innerHTML = keys.map(sym => {
+    const r   = results[sym];
+    const imp = r.improvement || 0;
+    const op  = r.old_perf   || {};
+    const np  = r.new_perf   || {};
+    const ch  = r.changes    || [];
+    const coin = sym.replace('USDT','');
+    const impColor = imp > 10 ? 'var(--green)' : imp > 0 ? 'var(--gold)' : 'var(--red)';
+    const changed   = ch.filter(c => c.changed);
+    const unchanged = ch.filter(c => !c.changed);
+    return `<div style="border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:14px;background:var(--bg2)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <span style="font-family:var(--mono);font-weight:700;font-size:16px">${coin}/USDT</span>
+        <div style="display:flex;gap:8px;align-items:center">
+          <span style="font-family:var(--mono);font-size:13px;font-weight:700;color:${impColor}">${imp>0?'+':''}${imp}%</span>
+          ${r.applied ? '<span class="card-badge badge-green">✅ Applied</span>' : '<span class="card-badge badge-gold">📋 Review</span>'}
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
+        <div style="background:var(--bg1);border-radius:8px;padding:10px">
+          <div style="font-size:9px;color:var(--t3);font-family:var(--mono);margin-bottom:6px">BEFORE</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;text-align:center">
+            <div><div style="font-size:9px;color:var(--t2)">Win Rate</div><div style="font-family:var(--mono);font-size:13px">${op.win_rate||0}%</div></div>
+            <div><div style="font-size:9px;color:var(--t2)">PF</div><div style="font-family:var(--mono);font-size:13px">${op.profit_factor||0}</div></div>
+            <div><div style="font-size:9px;color:var(--t2)">Max DD</div><div style="font-family:var(--mono);font-size:13px;color:var(--red)">${op.max_drawdown||0}%</div></div>
+            <div><div style="font-size:9px;color:var(--t2)">Signals</div><div style="font-family:var(--mono);font-size:13px;color:var(--t2)">${op.total_signals||0}</div></div>
+          </div>
+        </div>
+        <div style="background:var(--bg1);border-radius:8px;padding:10px;border:1px solid var(--green-br)">
+          <div style="font-size:9px;color:var(--green);font-family:var(--mono);margin-bottom:6px">AFTER ✨</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;text-align:center">
+            <div><div style="font-size:9px;color:var(--t2)">Win Rate</div><div style="font-family:var(--mono);font-size:13px;color:var(--green)">${np.win_rate||0}%</div></div>
+            <div><div style="font-size:9px;color:var(--green);font-size:9px">PF</div><div style="font-family:var(--mono);font-size:13px;color:var(--green)">${np.profit_factor||0}</div></div>
+            <div><div style="font-size:9px;color:var(--t2)">Max DD</div><div style="font-family:var(--mono);font-size:13px;color:var(--orange)">${np.max_drawdown||0}%</div></div>
+            <div><div style="font-size:9px;color:var(--t2)">Signals</div><div style="font-family:var(--mono);font-size:13px;color:var(--t2)">${np.total_signals||0}</div></div>
+          </div>
+        </div>
+      </div>
+      ${changed.length ? `
+      <div style="margin-bottom:10px">
+        <div style="font-size:9px;color:var(--gold);font-family:var(--mono);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">🔄 التعديلات المقترحة</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:6px">
+          ${changed.map(c => `<div style="background:rgba(240,185,11,.06);border:1px solid var(--gold-br);border-radius:6px;padding:8px 10px">
+            <div style="font-size:9px;color:var(--t2);margin-bottom:3px">${c.label}</div>
+            <div style="font-family:var(--mono);font-size:12px">
+              <span style="color:var(--red);text-decoration:line-through">${c.old}</span>
+              <span style="color:var(--t3);margin:0 4px">→</span>
+              <span style="color:var(--green);font-weight:700">${c.new}</span>
+            </div>
+          </div>`).join('')}
+        </div>
+      </div>` : ''}
+      <details>
+        <summary style="font-size:10px;color:var(--t3);cursor:pointer;font-family:var(--mono)">Unchanged (${unchanged.length})</summary>
+        <div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:8px">
+          ${unchanged.map(c => `<span style="background:var(--bg1);border:1px solid var(--border);border-radius:4px;padding:3px 8px;font-family:var(--mono);font-size:10px;color:var(--t2)">${c.label}: ${c.old}</span>`).join('')}
+        </div>
+      </details>
+    </div>`;
+  }).join('');
+}
 
-  // ── Risk Monitor ──
-  const risk  = snap.risk || {};
-  const rmObj = metrics.risk_management || {};
-  const rScore = rmObj.risk_score || 0;
-  const rColor = rScore > 70 ? 'var(--red)' : rScore > 40 ? 'var(--orange)' : 'var(--green)';
-  const rBadge = document.getElementById('ag-risk-badge');
-  rBadge.textContent = 'Risk: ' + rScore + '/100';
-  rBadge.className   = 'card-badge ' + (rScore > 70 ? 'badge-red' : rScore > 40 ? 'badge-gold' : 'badge-green');
+function renderMarketSignals(data) {
+  const signals = data.metrics?.market_intelligence?.strategy_signals || {};
+  const market  = data.metrics?.dashboard_snapshot?.market || {};
+  const body    = document.getElementById('ag-signals-body');
+  const keys    = Object.keys(signals);
+  const regimes = {trending_up:'🟢 Up', trending_down:'🔴 Down', ranging:'↔️ Range', volatile:'⚠️ Vol'};
+  document.getElementById('ag-market-regime').textContent =
+    Object.values(market).map(m => regimes[m.regime] || m.regime).join(' | ') || '--';
+  if (!keys.length) {
+    body.innerHTML = '<div class="empty-state"><span class="ei">📡</span><span class="et">No signals</span></div>';
+    return;
+  }
+  body.innerHTML = keys.map(sym => {
+    const s = signals[sym]; const m = market[sym] || {};
+    const stUp = s.supertrend?.includes('صاعد');
+    const sqFire = s.squeeze?.includes('انطلق');
+    const htfOk = s.htf?.includes('✅');
+    const allOk = stUp && sqFire && htfOk && s.mfi > 50;
+    const coin = sym.replace('USDT','');
+    return `<div style="padding:12px 0;border-bottom:1px solid var(--border2)">
+      <div style="display:flex;justify-content:space-between;margin-bottom:8px">
+        <span style="font-family:var(--mono);font-weight:700">${coin}/USDT</span>
+        ${allOk ? '<span class="card-badge badge-green">🔥 SIGNAL</span>' : '<span style="font-size:10px;color:var(--t2)">'+(regimes[m.regime]||'--')+'</span>'}
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px">
+        <div style="background:var(--bg2);border-radius:5px;padding:5px;text-align:center">
+          <div style="font-size:8px;color:var(--t3);margin-bottom:2px">ST</div>
+          <div style="font-size:13px">${stUp ? '🟢' : '🔴'}</div>
+        </div>
+        <div style="background:var(--bg2);border-radius:5px;padding:5px;text-align:center">
+          <div style="font-size:8px;color:var(--t3);margin-bottom:2px">SQ</div>
+          <div style="font-size:13px">${sqFire ? '🔥' : '🔒'}</div>
+        </div>
+        <div style="background:var(--bg2);border-radius:5px;padding:5px;text-align:center">
+          <div style="font-size:8px;color:var(--t3);margin-bottom:2px">MFI</div>
+          <div style="font-family:var(--mono);font-size:11px;color:${s.mfi>70?'var(--red)':s.mfi>50?'var(--green)':'var(--t2)'}">${(s.mfi||0).toFixed(0)}</div>
+        </div>
+        <div style="background:var(--bg2);border-radius:5px;padding:5px;text-align:center">
+          <div style="font-size:8px;color:var(--t3);margin-bottom:2px">HTF</div>
+          <div style="font-size:13px">${htfOk ? '✅' : '❌'}</div>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
 
+function renderRisk(data) {
+  const rm   = data.metrics?.risk_management || {};
+  const risk = data.metrics?.dashboard_snapshot?.risk || {};
+  const meta = data.metrics?.meta_supervisor || {};
+  const sc   = rm.risk_score || 0;
+  const col  = sc > 70 ? 'var(--red)' : sc > 40 ? 'var(--orange)' : 'var(--green)';
+  document.getElementById('ag-risk-badge').textContent = 'Risk: ' + sc + '/100';
+  document.getElementById('ag-risk-badge').className   = 'card-badge ' + (sc>70?'badge-red':sc>40?'badge-gold':'badge-green');
   document.getElementById('ag-risk-body').innerHTML = `
-    <div class="stat-row"><span class="stat-lbl">System Health</span><span class="stat-val" style="color:${rColor}">${metrics.meta_supervisor?.system_health_pct?.toFixed(0) || '--'}%</span></div>
-    <div class="stat-row"><span class="stat-lbl">Risk Score</span><span class="stat-val" style="color:${rColor}">${rScore}/100</span></div>
-    <div class="stat-row"><span class="stat-lbl">VaR (95%)</span><span class="stat-val mc-red">${rmObj.var_95?.toFixed(2) || '0.00'}%</span></div>
-    <div class="stat-row"><span class="stat-lbl">Current Drawdown</span><span class="stat-val mc-red">${rmObj.current_drawdown_pct?.toFixed(2) || '0.00'}%</span></div>
-    <div class="stat-row"><span class="stat-lbl">Trading Halted</span><span class="stat-val" style="color:${risk.trading_halted ? 'var(--red)' : 'var(--green)'}">${risk.trading_halted ? '🚨 YES' : '✅ NO'}</span></div>
-    <div class="stat-row"><span class="stat-lbl">Breaches Today</span><span class="stat-val">${rmObj.breaches_today || 0}</span></div>
-  `;
+    <div class="stat-row"><span class="stat-lbl">System Health</span><span class="stat-val" style="color:${col}">${(meta.system_health_pct||0).toFixed(0)}%</span></div>
+    <div class="stat-row"><span class="stat-lbl">Risk Score</span><span class="stat-val" style="color:${col}">${sc}/100</span></div>
+    <div class="stat-row"><span class="stat-lbl">VaR 95%</span><span class="stat-val mc-red">${(rm.var_95||0).toFixed(2)}%</span></div>
+    <div class="stat-row"><span class="stat-lbl">Drawdown</span><span class="stat-val mc-red">${(rm.current_drawdown_pct||0).toFixed(2)}%</span></div>
+    <div class="stat-row"><span class="stat-lbl">Trading</span><span class="stat-val" style="color:${risk.trading_halted?'var(--red)':'var(--green)'}">${risk.trading_halted?'🚨 HALTED':'✅ ACTIVE'}</span></div>
+    <div class="stat-row"><span class="stat-lbl">Breaches</span><span class="stat-val">${rm.breaches_today||0}</span></div>`;
+}
 
-  // ── Events ──
-  const events = snap.recent_events || [];
-  document.getElementById('ag-events-count').textContent = events.length + ' events';
-  const priorityColors = { 3:'var(--red)', 2:'var(--orange)', 1:'var(--t2)' };
-  const priorityLabels = { 3:'🔴 HIGH', 2:'🟡 MED', 1:'⚪ LOW' };
-  const agentLabels = {
-    meta_supervisor:'🧠 Meta', risk_management:'🛡️ Risk',
-    market_intelligence:'📊 Market', orchestrator:'🎯 Orch',
-    audit_backtesting:'📋 Audit', execution_quality:'⚡ Exec',
-  };
-  const typeLabels = {
-    agent_down:'Agent Down', var_update:'VaR Update',
-    risk_breach:'Risk Breach', audit_log:'Audit Log',
-    strategy_signal:'Signal',
-  };
-
-  if (!events.length) {
+function renderEvents(data) {
+  const evs = data.metrics?.dashboard_snapshot?.recent_events || [];
+  const pc  = {3:'var(--red)', 2:'var(--orange)', 1:'var(--t2)'};
+  const pl  = {3:'🔴 HIGH', 2:'🟡 MED', 1:'⚪ LOW'};
+  const al  = {meta_supervisor:'🧠', risk_management:'🛡️', market_intelligence:'📊', orchestrator:'🎯', audit_backtesting:'📋', execution_quality:'⚡'};
+  const tl  = {agent_down:'Agent Down', var_update:'VaR', risk_breach:'Risk Breach', audit_log:'Audit', strategy_signal:'Signal'};
+  document.getElementById('ag-events-count').textContent = evs.length;
+  if (!evs.length) {
     document.getElementById('ag-events-tbody').innerHTML =
       '<tr><td colspan="5"><div class="empty-state"><span class="ei">📡</span><span class="et">No events</span></div></td></tr>';
     return;
   }
-
-  document.getElementById('ag-events-tbody').innerHTML = events.map(ev => {
-    const ts  = ev.timestamp ? new Date(ev.timestamp * 1000).toLocaleTimeString() : '--';
+  document.getElementById('ag-events-tbody').innerHTML = evs.map(ev => {
+    const ts  = ev.timestamp ? new Date(ev.timestamp*1000).toLocaleTimeString() : '--';
     const msg = ev.payload?.message || ev.type || '--';
-    const pc  = priorityColors[ev.priority] || 'var(--t2)';
-    const pl  = priorityLabels[ev.priority] || '--';
     return `<tr>
       <td class="td-muted">${ts}</td>
-      <td><span style="font-family:var(--mono);font-size:11px">${agentLabels[ev.source] || ev.source}</span></td>
-      <td><span class="card-badge badge-blue" style="font-size:9px">${typeLabels[ev.type] || ev.type}</span></td>
-      <td style="font-family:var(--mono);font-size:11px;color:var(--t1);max-width:300px;white-space:normal">${msg}</td>
-      <td><span style="font-family:var(--mono);font-size:10px;color:${pc}">${pl}</span></td>
+      <td style="font-family:var(--mono);font-size:12px">${al[ev.source]||''} ${ev.source||''}</td>
+      <td><span class="card-badge badge-blue" style="font-size:9px">${tl[ev.type]||ev.type}</span></td>
+      <td style="font-family:var(--mono);font-size:11px;max-width:280px;white-space:normal">${msg}</td>
+      <td style="font-family:var(--mono);font-size:10px;color:${pc[ev.priority]||'var(--t2)'}">${pl[ev.priority]||'--'}</td>
     </tr>`;
   }).join('');
 }
 
-// Auto-refresh agents every 60s when tab is active
 setInterval(() => {
-  const panel = document.getElementById('tab-agents');
-  if (panel && panel.classList.contains('active')) loadAgents();
+  if (document.getElementById('tab-agents')?.classList.contains('active')) loadAgents();
 }, 60000);
 
 // ══════════════════════════════════════════
