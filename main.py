@@ -561,16 +561,21 @@ class SpotBot:
 # ══════════════════════════════════════════
 class FuturesBot:
     def __init__(self):
-        self.ex = ccxt.binanceusdm({
+        self.ex = ccxt.binance({
             "apiKey":  os.getenv("BINANCE_FUTURES_API_KEY", os.getenv("BINANCE_API_KEY","")).strip(),
             "secret":  os.getenv("BINANCE_FUTURES_SECRET_KEY", os.getenv("BINANCE_SECRET_KEY","")).strip(),
             "enableRateLimit": True,
             "options": {
                 "adjustForTimeDifference": True,
                 "recvWindow": 15000,
+                "defaultType": "future",
             }
         })
-        self.ex.set_sandbox_mode(True)  # binanceusdm يدعم sandbox للـ Futures testnet
+        # تجاوز URLs مباشرة لـ Futures Testnet
+        self.ex.urls["api"]["fapiPublic"]    = "https://testnet.binancefuture.com/fapi/v1"
+        self.ex.urls["api"]["fapiPrivate"]   = "https://testnet.binancefuture.com/fapi/v1"
+        self.ex.urls["api"]["fapiPublicV2"]  = "https://testnet.binancefuture.com/fapi/v2"
+        self.ex.urls["api"]["fapiPrivateV2"] = "https://testnet.binancefuture.com/fapi/v2"
         self.trades:     deque = deque(maxlen=1000)
         self.positions:  dict  = {}
         self.open_times: dict  = {}
