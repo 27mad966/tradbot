@@ -561,20 +561,23 @@ class SpotBot:
 # ══════════════════════════════════════════
 class FuturesBot:
     def __init__(self):
-        self.ex = ccxt.binance({
+        self.ex = ccxt.binanceusdm({
             "apiKey":  os.getenv("BINANCE_FUTURES_API_KEY", os.getenv("BINANCE_API_KEY","")).strip(),
             "secret":  os.getenv("BINANCE_FUTURES_SECRET_KEY", os.getenv("BINANCE_SECRET_KEY","")).strip(),
             "enableRateLimit": True,
-            "options": {"adjustForTimeDifference": True, "recvWindow": 15000, "defaultType": "future"}
+            "options": {
+                "adjustForTimeDifference": True,
+                "recvWindow": 15000,
+            }
         })
-        self.ex.set_sandbox_mode(True)  # FIX #1 — Futures Testnet
+        self.ex.set_sandbox_mode(True)  # binanceusdm يدعم sandbox للـ Futures testnet
         self.trades:     deque = deque(maxlen=1000)
         self.positions:  dict  = {}
         self.open_times: dict  = {}
 
     async def get_balance(self) -> dict:
         try:
-            bal  = self.ex.fetch_balance({"type":"future"})
+            bal  = self.ex.fetch_balance()
             usdt = float(bal["total"].get("USDT", 0.0))
             holdings = {}
             try:
